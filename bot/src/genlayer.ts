@@ -37,16 +37,33 @@ export async function deployBetMarket(
     args: [config.houseAddress, config.houseFeeBps] as CalldataEncodable[],
     leaderOnly: false,
   });
-  const receipt = await client.waitForTransactionReceipt({
+  const receipt = (await client.waitForTransactionReceipt({
     hash: hash as Hash,
     status: TransactionStatus.ACCEPTED,
     retries: 80,
     interval: 5000,
-  });
-  const data = (receipt as unknown as { data?: { contract_address?: string } })
-    .data;
-  const addr = data?.contract_address;
-  if (!addr) throw new Error("Deploy receipt missing contract_address");
+  })) as Record<string, unknown>;
+
+  const candidates: Array<unknown> = [
+    receipt.recipient,
+    (receipt.txDataDecoded as { contractAddress?: unknown } | undefined)
+      ?.contractAddress,
+    (receipt.data as { contract_address?: unknown } | undefined)
+      ?.contract_address,
+    (receipt as { contractAddress?: unknown }).contractAddress,
+    (receipt as { contract_address?: unknown }).contract_address,
+  ];
+  const addr = candidates.find(
+    (c): c is string =>
+      typeof c === "string" && /^0x[0-9a-fA-F]{40}$/.test(c) && c !== "0x" + "0".repeat(40),
+  );
+  if (!addr) {
+    console.error(
+      "[deploy] could not locate contract address in receipt; keys=",
+      Object.keys(receipt),
+    );
+    throw new Error("Deploy receipt missing contract address");
+  }
   return addr as `0x${string}`;
 }
 
