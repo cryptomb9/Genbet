@@ -32,39 +32,61 @@ export async function deployBetMarket(
   contractCode: string,
 ): Promise<`0x${string}`> {
   const client = newClient(operatorPrivateKey);
-  const hash = await client.deployContract({
+  const hash = (await client.deployContract({
     code: contractCode,
     args: [config.houseAddress, config.houseFeeBps] as CalldataEncodable[],
     leaderOnly: false,
-  });
-  const receipt = (await client.waitForTransactionReceipt({
-    hash: hash as Hash,
-    status: TransactionStatus.ACCEPTED,
-    retries: 80,
-    interval: 5000,
-  })) as Record<string, unknown>;
+  })) as Hash;
+  console.log(`[deploy] tx hash: ${hash}`);
 
-  const candidates: Array<unknown> = [
-    receipt.recipient,
-    (receipt.txDataDecoded as { contractAddress?: unknown } | undefined)
-      ?.contractAddress,
-    (receipt.data as { contract_address?: unknown } | undefined)
-      ?.contract_address,
-    (receipt as { contractAddress?: unknown }).contractAddress,
-    (receipt as { contract_address?: unknown }).contract_address,
-  ];
-  const addr = candidates.find(
-    (c): c is string =>
-      typeof c === "string" && /^0x[0-9a-fA-F]{40}$/.test(c) && c !== "0x" + "0".repeat(40),
-  );
-  if (!addr) {
-    console.error(
-      "[deploy] could not locate contract address in receipt; keys=",
-      Object.keys(receipt),
-    );
-    throw new Error("Deploy receipt missing contract address");
+  // GenLayer Asimov can take 5-10+ minutes to reach ACCEPTED. The contract
+  // address (recipient) is known as soon as the tx is at least PROPOSING (>=2).
+  // Poll getTransaction and pull the address out as soon as it's there.
+  const ZERO = "0x" + "0".repeat(40);
+  const isAddr = (s: unknown): s is string =>
+    typeof s === "string" && /^0x[0-9a-fA-F]{40}$/.test(s) && s !== ZERO;
+
+  for (let i = 0; i < 60; i++) {
+    try {
+      const tx = (await client.getTransaction({ hash })) as Record<
+        string,
+        unknown
+      >;
+      const status = Number(tx.status ?? 0);
+      const statusName = String(tx.statusName ?? "");
+      const recipient = tx.recipient;
+      const decoded = tx.txDataDecoded as
+        | { contractAddress?: unknown }
+        | undefined;
+      const candidate = isAddr(recipient)
+        ? recipient
+        : isAddr(decoded?.contractAddress)
+          ? (decoded!.contractAddress as string)
+          : null;
+
+      if (i === 0 || i % 4 === 0) {
+        console.log(
+          `[deploy] poll ${i}: status=${status} (${statusName}) recipient=${recipient ?? "none"}`,
+        );
+      }
+      if (candidate && status >= 2) {
+        console.log(`[deploy] contract address: ${candidate}`);
+        return candidate as `0x${string}`;
+      }
+      if (statusName === "CANCELED" || statusName === "LEADER_TIMEOUT") {
+        throw new Error(`Deploy failed on-chain: ${statusName}`);
+      }
+    } catch (e) {
+      console.log(`[deploy] poll ${i} err:`, (e as Error).message);
+    }
+    await new Promise((r) => setTimeout(r, 4000));
   }
-  return addr as `0x${string}`;
+  // Fall back to the slower waitForTransactionReceipt path so we still surface
+  // a clear error if anything is genuinely stuck.
+  void TransactionStatus.ACCEPTED;
+  throw new Error(
+    `Deploy did not produce a contract address within 4 minutes for hash ${hash}`,
+  );
 }
 
 export interface OnchainBet {
