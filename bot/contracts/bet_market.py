@@ -1,4 +1,6 @@
-# { "Depends": "py-genlayer:test" }
+# v0.1.0
+# { "Depends": "py-genlayer:15qfivjvy80800rh998pcxmd2m8va1wq2qzqhz850n8ggcr4i9q0" }
+
 #
 # BetMarket — peer-to-peer YES/NO betting on real-world events.
 # - Anyone can create_bet by staking GEN with a YES/NO claim and a deadline.

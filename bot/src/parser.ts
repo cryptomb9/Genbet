@@ -49,7 +49,7 @@ export async function parseBetFromText(
   }
   try {
     const res = await client.chat.completions.create({
-      model: "gpt-5",
+      model: "llama-3.3-70b-versatile",
       messages: [
         { role: "system", content: SYSTEM },
         {
