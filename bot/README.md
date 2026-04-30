@@ -155,35 +155,6 @@ bot/
 └── README.md
 ```
 
----
-
-## Free hosting
-
-The bot uses **long polling** so it works behind any NAT and needs no inbound
-ports. Two free paths:
-
-### A. Replit (this template)
-
-Already wired. The "Telegram Bot" workflow runs `pnpm --filter @workspace/bot
-run dev`. Keep the Repl alive by deploying it as a Reserved VM or by pinging it
-from a free uptime service.
-
-### B. Cloudflare Workers (webhook mode)
-
-grammY supports webhooks out of the box. To switch:
-
-```ts
-import { webhookCallback } from "grammy";
-export default {
-  fetch: webhookCallback(bot, "cloudflare-mod"),
-};
-```
-
-Then call `bot.api.setWebhook("https://<your-worker>.workers.dev/")` once at
-deploy time. SQLite isn't available on Workers — port `db.ts` to D1
-(`drizzle-orm/d1`) and `crypto.ts` to Workers' `crypto.subtle` AES-GCM.
-
----
 
 ## Security notes
 
