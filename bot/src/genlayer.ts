@@ -1,6 +1,7 @@
 import { createClient, createAccount } from "genlayer-js";
-import { testnetAsimov, localnet } from "genlayer-js/chains";
+import { testnetAsimov, testnetBradbury, localnet } from "genlayer-js/chains";
 import {
+  ExecutionResult,
   TransactionStatus,
   type Address as GLAddress,
   type CalldataEncodable,
@@ -8,11 +9,14 @@ import {
 } from "genlayer-js/types";
 import { config } from "./config.js";
 
-function chain() {
-  return config.network === "localnet" ? localnet : testnetAsimov;
+export function chain() {
+  if (config.network === "localnet") return localnet;
+  if (config.network === "testnet-bradbury") return testnetBradbury;
+  return testnetAsimov;
 }
 
 type GLClient = ReturnType<typeof createClient>;
+const ZERO = "0x" + "0".repeat(40);
 
 function newClient(privateKey?: `0x${string}`): GLClient {
   const account = createAccount(privateKey);
@@ -39,7 +43,7 @@ export async function deployBetMarket(
   })) as Hash;
   console.log(`[deploy] tx hash: ${hash}`);
 
-  // GenLayer Asimov can take 5-10+ minutes to reach ACCEPTED. The contract
+  // GenLayer testnet can take several minutes to reach ACCEPTED. The contract
   // address (recipient) is known as soon as the tx is at least PROPOSING (>=2).
   // Poll getTransaction and pull the address out as soon as it's there.
   const ZERO = "0x" + "0".repeat(40);
@@ -186,13 +190,176 @@ async function writeAndWait(
     args: args.args as CalldataEncodable[],
     value: args.value,
   })) as `0x${string}`;
-  const receipt = await client.waitForTransactionReceipt({
-    hash: hash as Hash,
-    status: TransactionStatus.ACCEPTED,
-    retries,
-    interval: 5000,
-  });
+  console.log(
+    `[onchain] submitted ${args.functionName} tx=${hash} contract=${args.address}`,
+  );
+
+  let receipt: unknown;
+  try {
+    receipt = await client.waitForTransactionReceipt({
+      hash: hash as Hash,
+      status: TransactionStatus.ACCEPTED,
+      retries,
+      interval: 5000,
+    });
+  } catch (err) {
+    const base = err instanceof Error ? err.message : String(err);
+    try {
+      const tx = (await client.getTransaction({ hash: hash as Hash })) as {
+        status?: string | number;
+        statusName?: string;
+        txExecutionResultName?: string;
+      };
+      throw new Error(
+        `GenLayer ${args.functionName} failed: tx=${hash}, status=${String(
+          tx.statusName ?? tx.status ?? "unknown",
+        )}, execution=${String(tx.txExecutionResultName ?? "unknown")}, cause=${base}`,
+      );
+    } catch {
+      throw new Error(
+        `GenLayer ${args.functionName} failed: tx=${hash}, cause=${base}`,
+      );
+    }
+  }
+
+  const tx = receipt as {
+    txExecutionResultName?: ExecutionResult | string;
+    statusName?: TransactionStatus | string;
+    consensus_data?: {
+      leader_receipt?: Array<{
+        error?: string | null;
+        execution_result?: string;
+        result?: string;
+      }>;
+    };
+  };
+  if (tx.txExecutionResultName !== ExecutionResult.FINISHED_WITH_RETURN) {
+    const leader = tx.consensus_data?.leader_receipt?.[0];
+    const detail =
+      leader?.error ||
+      leader?.execution_result ||
+      leader?.result ||
+      tx.txExecutionResultName ||
+      "unknown execution result";
+    throw new Error(
+      `GenLayer ${args.functionName} execution failed: tx=${hash}, status=${String(
+        tx.statusName ?? "unknown",
+      )}, detail=${detail}`,
+    );
+  }
+
+  console.log(
+    `[onchain] accepted ${args.functionName} tx=${hash} execution=${String(
+      tx.txExecutionResultName ?? "unknown",
+    )}`,
+  );
+
   return { hash, receipt };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function sameAddr(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function isExpectedCreatedBet(
+  bet: OnchainBet | null,
+  creatorAddress: `0x${string}`,
+  payload: {
+    question: string;
+    deadline: number;
+    creatorYes: boolean;
+    resolutionUrl: string;
+    stakeWei: bigint;
+  },
+): bet is OnchainBet {
+  if (!bet) return false;
+  return (
+    sameAddr(bet.creator, creatorAddress) &&
+    bet.question === payload.question &&
+    Number(bet.deadline) === payload.deadline &&
+    Boolean(bet.creator_yes) === payload.creatorYes &&
+    String(bet.stake) === payload.stakeWei.toString() &&
+    (bet.resolution_url || "") === (payload.resolutionUrl || "") &&
+    sameAddr(bet.winner, ZERO)
+  );
+}
+
+function extractNumericReturn(receipt: unknown): number {
+  const tx = receipt as {
+    data?: Record<string, unknown>;
+    consensus_data?: {
+      leader_receipt?: Array<{
+        execution_result?: unknown;
+        result?: unknown;
+      }>;
+    };
+  };
+  const candidates = [
+    tx.data?.execution_result,
+    tx.data?.result,
+    tx.data?.return_value,
+    tx.consensus_data?.leader_receipt?.[0]?.execution_result,
+    tx.consensus_data?.leader_receipt?.[0]?.result,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "number" && Number.isInteger(c) && c > 0) return c;
+    if (typeof c === "string") {
+      const trimmed = c.trim();
+      if (/^\d+$/.test(trimmed)) return Number(trimmed);
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (typeof parsed === "number" && Number.isInteger(parsed) && parsed > 0) {
+          return parsed;
+        }
+      } catch {
+        // not JSON
+      }
+    }
+  }
+  return 0;
+}
+
+async function recoverCreateBetId(
+  contract: `0x${string}`,
+  creatorAddress: `0x${string}`,
+  payload: {
+    question: string;
+    deadline: number;
+    creatorYes: boolean;
+    resolutionUrl: string;
+    stakeWei: bigint;
+  },
+): Promise<number> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const mine = await bm.myBets(contract, creatorAddress, 30);
+      const match = mine.find((b) => isExpectedCreatedBet(b, creatorAddress, payload));
+      if (match?.id && Number.isInteger(match.id) && match.id > 0) {
+        return match.id;
+      }
+    } catch {
+      // ignore transient read failures
+    }
+
+    try {
+      const stats = await bm.stats(contract);
+      if (stats.total_bets > 0) {
+        const tail = await bm.getBet(contract, stats.total_bets);
+        if (isExpectedCreatedBet(tail, creatorAddress, payload)) {
+          return stats.total_bets;
+        }
+      }
+    } catch {
+      // ignore transient read failures
+    }
+
+    await sleep(2500 + attempt * 1000);
+  }
+  return 0;
 }
 
 export async function createBetOnchain(
@@ -209,6 +376,7 @@ export async function createBetOnchain(
   },
 ): Promise<{ hash: `0x${string}`; betId: number }> {
   const client = newClient(signerPk);
+  const creatorAddress = createAccount(signerPk).address as `0x${string}`;
   const { hash, receipt } = await writeAndWait(client, {
     address: contract,
     functionName: "create_bet",
@@ -223,28 +391,20 @@ export async function createBetOnchain(
     value: payload.stakeWei,
   });
 
-  let betId = 0;
-  const data = (receipt as { data?: Record<string, unknown> })?.data;
-  if (data) {
-    const candidates = [
-      data.execution_result,
-      data.result,
-      data.return_value,
-    ];
-    for (const c of candidates) {
-      if (typeof c === "number") {
-        betId = c;
-        break;
-      }
-      if (typeof c === "string" && /^\d+$/.test(c)) {
-        betId = Number(c);
-        break;
-      }
+  let betId = extractNumericReturn(receipt);
+  if (betId > 0) {
+    const byId = await bm.getBet(contract, betId).catch(() => null);
+    if (!isExpectedCreatedBet(byId, creatorAddress, payload)) {
+      betId = 0;
     }
   }
   if (!betId) {
-    const stats = await bm.stats(contract);
-    betId = stats.total_bets;
+    betId = await recoverCreateBetId(contract, creatorAddress, payload);
+  }
+  if (!Number.isInteger(betId) || betId <= 0) {
+    throw new Error(
+      `create_bet accepted but bet id could not be recovered from chain state, tx=${hash}`,
+    );
   }
   return { hash, betId };
 }

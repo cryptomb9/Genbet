@@ -15,7 +15,7 @@ export const config = {
   telegramToken: required("TELEGRAM_BOT_TOKEN"),
   houseAddress: required("HOUSE_FEE_ADDRESS") as `0x${string}`,
   houseFeeBps: Number(process.env.HOUSE_FEE_BPS || "1000"),
-  network: (process.env.GENLAYER_NETWORK || "testnet-asimov") as
+  network: (process.env.GENLAYER_NETWORK || "testnet-bradbury") as
     | "testnet-asimov"
     | "testnet-bradbury"
     | "localnet",

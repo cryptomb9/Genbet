@@ -1,6 +1,6 @@
 import { createClient, createAccount } from "genlayer-js";
-import { testnetAsimov } from "genlayer-js/chains";
-const client = createClient({ chain: testnetAsimov, account: createAccount() });
+import { chain } from "../genlayer.js";
+const client = createClient({ chain: chain(), account: createAccount() });
 const ADDR = (process.argv[2] ??
   "0x735D05fe4d5B5239c9da4689Ed0C1e49b5AC275a") as `0x${string}`;
 try {

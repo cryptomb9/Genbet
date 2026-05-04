@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient, createAccount } from "genlayer-js";
-import { testnetAsimov } from "genlayer-js/chains";
-import { TransactionStatus } from "genlayer-js/types";
+import { ExecutionResult, TransactionStatus, type Hash } from "genlayer-js/types";
 import { loadOperatorKey } from "../deploy.js";
+import { chain } from "../genlayer.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CODE = fs.readFileSync(
@@ -13,7 +13,7 @@ const CODE = fs.readFileSync(
 );
 
 const account = createAccount(loadOperatorKey());
-const client = createClient({ chain: testnetAsimov, account });
+const client = createClient({ chain: chain(), account });
 console.log("operator:", account.address);
 
 const hash = await client.deployContract({
@@ -24,7 +24,7 @@ const hash = await client.deployContract({
 console.log("hash:", hash);
 
 for (let i = 0; i < 60; i++) {
-  const tx = (await client.getTransaction({ hash })) as Record<string, unknown>;
+  const tx = (await client.getTransaction({ hash: hash as Hash })) as Record<string, unknown>;
   const sn = String(tx.statusName ?? "");
   console.log(
     `[${i}] status=${tx.status} (${sn}) result=${tx.txExecutionResult ?? "?"} (${tx.txExecutionResultName ?? ""}) recipient=${tx.recipient}`,
@@ -33,7 +33,7 @@ for (let i = 0; i < 60; i++) {
     ["ACCEPTED", "FINALIZED", "UNDETERMINED", "CANCELED", "LEADER_TIMEOUT"]
       .includes(sn)
   ) {
-    if (Number(tx.txExecutionResult) === 0 || tx.txExecutionResultName === "SUCCESS") {
+    if (tx.txExecutionResultName === ExecutionResult.FINISHED_WITH_RETURN) {
       console.log("DEPLOY OK at", tx.recipient);
       // try a read
       try {

@@ -53,6 +53,31 @@ function setPendingStatus(id: string, status: string, onchainId?: number) {
   }
 }
 
+const MIN_DEADLINE_BUFFER_SECONDS = 30 * 60;
+const ONCHAIN_RETRY_ATTEMPTS = 3;
+
+async function retryOnchain<T>(
+  opName: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= ONCHAIN_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await run();
+    } catch (err) {
+      lastError = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[retry] ${opName} attempt ${attempt}/${ONCHAIN_RETRY_ATTEMPTS} failed: ${msg}`,
+      );
+      if (attempt === ONCHAIN_RETRY_ATTEMPTS) break;
+      const delayMs = 1500 * attempt;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 export function registerCallbacks(
   bot: Bot,
   getContract: () => `0x${string}`,
@@ -92,6 +117,13 @@ export function registerCallbacks(
     }
 
     try {
+      const minDeadlineUnix =
+        Math.floor(Date.now() / 1000) + MIN_DEADLINE_BUFFER_SECONDS;
+      if (pb.deadline < minDeadlineUnix) {
+        throw new Error(
+          "Bet deadline is too close for GenLayer testnet settlement. Create it again with at least 30 minutes before resolution.",
+        );
+      }
       const { hash, betId } = await createBetOnchain(
         getContract(),
         w.privateKey,
@@ -133,8 +165,9 @@ export function registerCallbacks(
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const concise = msg.length > 800 ? `${msg.slice(0, 800)}...` : msg;
       await ctx.editMessageText(
-        `❌ On-chain create_bet failed:\n<code>${escapeHtml(msg)}</code>`,
+        `❌ On-chain create_bet failed:\n<code>${escapeHtml(concise)}</code>`,
         { parse_mode: "HTML" },
       );
       setPendingStatus(id, "cancelled");
@@ -218,12 +251,14 @@ export function registerCallbacks(
       return;
     }
     try {
-      const hash = await acceptBetOnchain(
-        getContract(),
-        w.privateKey,
-        pb.onchain_bet_id,
-        handle,
-        stakeWei,
+      const hash = await retryOnchain("accept_bet", () =>
+        acceptBetOnchain(
+          getContract(),
+          w.privateKey,
+          pb.onchain_bet_id!,
+          handle,
+          stakeWei,
+        ),
       );
       setPendingStatus(id, "active");
       const updated = await bm.getBet(getContract(), pb.onchain_bet_id);

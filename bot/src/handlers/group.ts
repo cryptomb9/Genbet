@@ -19,6 +19,8 @@ function shortId(): string {
   return crypto.randomBytes(4).toString("hex");
 }
 
+const MIN_DEADLINE_BUFFER_SECONDS = 30 * 60;
+
 function botMentioned(ctx: Context): boolean {
   const text = ctx.message?.text || ctx.message?.caption;
   if (!text) return false;
@@ -103,7 +105,12 @@ export function registerGroupHandler(
 
     // Persist a pending bet awaiting creator confirmation.
     const id = shortId();
-    const deadlineUnix = Math.floor(Date.parse(parsed.deadline_iso!) / 1000);
+    const minDeadlineUnix =
+      Math.floor(Date.now() / 1000) + MIN_DEADLINE_BUFFER_SECONDS;
+    const parsedDeadlineUnix = Math.floor(
+      Date.parse(parsed.deadline_iso!) / 1000,
+    );
+    const deadlineUnix = Math.max(parsedDeadlineUnix, minDeadlineUnix);
     db.prepare(
       `INSERT INTO pending_bets (
          id, chat_id, creator_tg_id, creator_handle, question, deadline,

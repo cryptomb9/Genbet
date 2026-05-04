@@ -1,17 +1,16 @@
 import { createClient, createAccount } from "genlayer-js";
-import { testnetAsimov } from "genlayer-js/chains";
-import { TransactionStatus } from "genlayer-js/types";
+import { TransactionStatus, type Hash } from "genlayer-js/types";
+import { chain } from "../genlayer.js";
 
 const HASH = (process.argv[2] ??
   "0x1f5debf1ea094770049ef2b2d525cdb0ce3325e799435bca1b27e7cfc62da03f") as `0x${string}`;
 
-const client = createClient({ chain: testnetAsimov, account: createAccount() });
+const client = createClient({ chain: chain(), account: createAccount() });
 const r = (await client.waitForTransactionReceipt({
-  hash: HASH,
+  hash: HASH as Hash,
   status: TransactionStatus.ACCEPTED,
   retries: 1,
   interval: 1000,
-  fullTransaction: true,
 })) as Record<string, unknown>;
 const replacer = (_k: string, v: unknown) =>
   typeof v === "bigint" ? v.toString() : v;

@@ -2,14 +2,32 @@ import type { Bot, Context } from "grammy";
 import { config } from "../config.js";
 import { getOrCreateUserWallet } from "../wallet.js";
 import { bm, getBalanceWei, resolveBetOnchain } from "../genlayer.js";
-import {
-  escapeHtml,
-  genFromWei,
-  renderBet,
-  shortAddr,
-} from "../format.js";
+import { escapeHtml, genFromWei, renderBet, shortAddr } from "../format.js";
 
 const FAUCET_URL = "https://testnet-faucet.genlayer.foundation";
+const ONCHAIN_RETRY_ATTEMPTS = 3;
+
+async function retryOnchain<T>(
+  opName: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= ONCHAIN_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await run();
+    } catch (err) {
+      lastError = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[retry] ${opName} attempt ${attempt}/${ONCHAIN_RETRY_ATTEMPTS} failed: ${msg}`,
+      );
+      if (attempt === ONCHAIN_RETRY_ATTEMPTS) break;
+      const delayMs = 2000 * attempt;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
 
 function ensureUser(ctx: Context) {
   const u = ctx.from;
@@ -22,28 +40,29 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
     const w = ensureUser(ctx);
     await ctx.reply(
       [
-        `<b>Welcome to BetBot</b> 🎲`,
-        ``,
-        `I run AI-resolved peer-to-peer bets on the GenLayer testnet.`,
-        ``,
+        "<b>Welcome to BetBot</b>",
+        "",
+        "I run AI-resolved peer-to-peer bets on the GenLayer testnet.",
+        "",
         `Your wallet: <code>${w.address}</code>`,
         `Network: <b>${config.network}</b>`,
         `Contract: <code>${getContract()}</code>`,
-        ``,
-        `<b>How to bet</b>`,
-        `In a group, tag me with a challenge:`,
-        `  <i>"@${ctx.me.username} I bet 5 GEN the Lakers beat the Bulls Thursday — anyone?"</i>`,
-        `I'll post a confirm card. Once you stake, anyone can take the other side.`,
-        ``,
-        `<b>Commands</b>`,
-        `/wallet — show your address &amp; balance`,
-        `/deposit — how to fund your wallet`,
-        `/mybets — list bets you're in`,
-        `/openbets — list bets waiting for an opponent`,
-        `/leaderboard — top earners`,
-        `/resolve &lt;id&gt; — settle a bet whose deadline has passed`,
-        `/contract — show the deployed contract address`,
-        `/help — show this message`,
+        "",
+        "<b>How to bet</b>",
+        "In a group, tag me with a challenge:",
+        `  <i>"@${ctx.me.username} I bet 5 GEN the Lakers beat the Bulls Thursday - anyone?"</i>`,
+        "I'll post a confirm card. Once you stake, anyone can take the other side.",
+        "",
+        "<b>Commands</b>",
+        "/wallet - show your address &amp; balance",
+        "/deposit - how to fund your wallet",
+        "/mybets - your bets in this chat",
+        "/mybetsall - your bets across all chats",
+        "/openbets - list bets waiting for an opponent",
+        "/leaderboard - top earners",
+        "/resolve &lt;id&gt; - settle a bet whose deadline has passed",
+        "/contract - show the deployed contract address",
+        "/help - show this message",
       ].join("\n"),
       { parse_mode: "HTML" },
     );
@@ -53,7 +72,7 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
     await ctx.reply(
       [
         "<b>Commands</b>",
-        "/wallet, /deposit, /mybets, /openbets, /leaderboard, /resolve &lt;id&gt;, /contract",
+        "/wallet, /deposit, /mybets, /mybetsall, /openbets, /leaderboard, /resolve &lt;id&gt;, /contract",
         "",
         "<b>Placing a bet (in groups)</b>",
         `Tag me with a YES/NO claim and a stake, e.g.\n@${ctx.me.username} 5 GEN the Lakers beat the Bulls tonight`,
@@ -73,10 +92,10 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
     }
     await ctx.reply(
       [
-        `<b>Your wallet</b>`,
+        "<b>Your wallet</b>",
         `<code>${w.address}</code>`,
         `Balance: <b>${balText}</b>`,
-        ``,
+        "",
         `Network: ${config.network}`,
         `Fund from the faucet: ${FAUCET_URL}`,
       ].join("\n"),
@@ -88,11 +107,11 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
     const w = ensureUser(ctx);
     await ctx.reply(
       [
-        `<b>Deposit GEN</b>`,
+        "<b>Deposit GEN</b>",
         `Send GEN on <b>${config.network}</b> to:`,
         `<code>${w.address}</code>`,
-        ``,
-        `Need testnet GEN? Use the faucet:`,
+        "",
+        "Need testnet GEN? Use the faucet:",
         FAUCET_URL,
       ].join("\n"),
       { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
@@ -107,6 +126,25 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
   });
 
   bot.command("mybets", async (ctx) => {
+    const w = ensureUser(ctx);
+    const bets = await bm.myBets(getContract(), w.address, 10);
+    const inGroup = ctx.chat.type === "group" || ctx.chat.type === "supergroup";
+    const visible = inGroup
+      ? bets.filter((b) => String(b.chat_id) === String(ctx.chat.id))
+      : bets;
+
+    if (inGroup && visible.length === 0) {
+      await ctx.reply("You have no bets in this group yet.");
+      return;
+    }
+    if (bets.length === 0) {
+      await ctx.reply("You have no bets yet. Tag me in a group to start one.");
+      return;
+    }
+    await ctx.reply(visible.map(renderBet).join("\n\n"), { parse_mode: "HTML" });
+  });
+
+  bot.command("mybetsall", async (ctx) => {
     const w = ensureUser(ctx);
     const bets = await bm.myBets(getContract(), w.address, 10);
     if (bets.length === 0) {
@@ -131,11 +169,11 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
       await ctx.reply("No resolved bets yet.");
       return;
     }
-    const lines = ["<b>🏆 Leaderboard</b>"];
+    const lines = ["<b>Leaderboard</b>"];
     rows.forEach((r, i) => {
       const name = r.handle ? `@${escapeHtml(r.handle)}` : shortAddr(r.address);
       lines.push(
-        `${i + 1}. ${name} — <b>+${genFromWei(r.profit_wei)} GEN</b> (${r.wins}W / ${r.losses}L)`,
+        `${i + 1}. ${name} - <b>+${genFromWei(r.profit_wei)} GEN</b> (${r.wins}W / ${r.losses}L)`,
       );
     });
     await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
@@ -166,12 +204,14 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
       );
       return;
     }
-    await ctx.reply(`Resolving bet #${id}… this may take 1–2 minutes.`);
+    await ctx.reply(`Resolving bet #${id}... this may take 1-2 minutes.`);
     try {
-      const hash = await resolveBetOnchain(getContract(), w.privateKey, id);
+      const hash = await retryOnchain("resolve", () =>
+        resolveBetOnchain(getContract(), w.privateKey, id),
+      );
       const updated = await bm.getBet(getContract(), id);
       const tail = updated ? `\n\n${renderBet(updated)}` : "";
-      await ctx.reply(`✅ Resolved. tx: <code>${hash}</code>${tail}`, {
+      await ctx.reply(`Resolved. tx: <code>${hash}</code>${tail}`, {
         parse_mode: "HTML",
       });
     } catch (err) {
@@ -180,3 +220,4 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
     }
   });
 }
+

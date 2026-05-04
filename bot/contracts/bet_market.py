@@ -10,6 +10,7 @@
 # - Winner gets pot - fee. House gets fee. UNCLEAR refunds both sides.
 from genlayer import *
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import quote
 import json
 
@@ -71,7 +72,7 @@ class BetMarket(gl.Contract):
     ) -> int:
         amount = gl.message.value
         assert amount > u256(0), "Must stake > 0 GEN"
-        assert u256(deadline) > gl.message.block_timestamp, "Deadline must be in the future"
+        assert u256(deadline) > int(datetime.now().timestamp()), "Deadline must be in the future"
         assert len(question) > 0 and len(question) < 500, "Question length out of range"
 
         bet_id = self.next_id
@@ -89,7 +90,7 @@ class BetMarket(gl.Contract):
             status="open",
             outcome="",
             winner=ZERO_ADDR,
-            created_at=gl.message.block_timestamp,
+            created_at=int(datetime.now().timestamp()),
             chat_id=chat_id,
             creator_handle=creator_handle,
             accepter_handle="",
@@ -108,7 +109,7 @@ class BetMarket(gl.Contract):
         assert bet.status == "open", "Bet is not open"
         assert gl.message.sender_address != bet.creator, "Cannot accept your own bet"
         assert gl.message.value == bet.stake, "Must match stake exactly"
-        assert gl.message.block_timestamp < bet.deadline, "Bet expired"
+        assert int(datetime.now().timestamp()) < bet.deadline, "Bet expired"
 
         bet.accepter = gl.message.sender_address
         bet.accepter_handle = accepter_handle
@@ -130,7 +131,7 @@ class BetMarket(gl.Contract):
         bet.status = "cancelled"
         self.bets[bid] = bet
         self._remove_id(self.open_ids, bid)
-        gl.emit_transfer(bet.creator, bet.stake)
+        gl.ContractAt(bet.creator).emit_transfer(value=bet.stake)
 
     @gl.public.write
     def resolve(self, bet_id: int) -> None:
@@ -138,7 +139,7 @@ class BetMarket(gl.Contract):
         assert bid in self.bets, "No such bet"
         bet = self.bets[bid]
         assert bet.status == "active", "Bet is not active"
-        assert gl.message.block_timestamp >= bet.deadline, "Too early to resolve"
+        assert int(datetime.now().timestamp()) >= bet.deadline, "Too early to resolve"
 
         question = bet.question
         url = bet.resolution_url
@@ -149,13 +150,13 @@ class BetMarket(gl.Contract):
             evidence = ""
             if len(url) > 0 and url.startswith("http"):
                 try:
-                    evidence = gl.nondet.web.get(url)[:6000]
+                    evidence = gl.nondet.web.render(url, mode="text")[:6000]
                 except Exception:
                     evidence = ""
             if len(evidence) == 0:
                 try:
                     search = "https://duckduckgo.com/html/?q=" + quote(question)
-                    evidence = gl.nondet.web.get(search)[:6000]
+                    evidence = gl.nondet.web.render(search, mode="text")[:6000]
                 except Exception:
                     evidence = ""
 
@@ -167,8 +168,15 @@ class BetMarket(gl.Contract):
             reason = str(res.get("reasoning", ""))[:400]
             return json.dumps({"verdict": verdict, "reasoning": reason}, sort_keys=True)
 
-        result_json = gl.eq_principle.strict_eq(nondet_block)
-        result = json.loads(result_json)
+        try:
+            result_json = gl.eq_principles.strict_eq(nondet_block)
+            result = json.loads(result_json)
+        except Exception:
+            # If LLM/web consensus fails, settle conservatively as UNCLEAR.
+            result = {
+                "verdict": "UNCLEAR",
+                "reasoning": "Could not reach reliable AI consensus at resolve time.",
+            }
         outcome = result["verdict"]
         reasoning = result["reasoning"]
 
@@ -182,8 +190,8 @@ class BetMarket(gl.Contract):
             self.bets[bid] = bet
             self._remove_id(self.active_ids, bid)
             self.resolved_ids.append(bid)
-            gl.emit_transfer(bet.creator, bet.stake)
-            gl.emit_transfer(bet.accepter, bet.stake)
+            gl.ContractAt(bet.creator).emit_transfer(value=bet.stake)
+            gl.ContractAt(bet.accepter).emit_transfer(value=bet.stake)
             return
 
         creator_won = (outcome == "YES" and bet.creator_yes) or (
@@ -202,9 +210,9 @@ class BetMarket(gl.Contract):
         fee = (pot * self.fee_bps) // u256(10000)
         winner_amount = pot - fee
 
-        gl.emit_transfer(winner, winner_amount)
+        gl.ContractAt(winner).emit_transfer(value=winner_amount)
         if fee > u256(0):
-            gl.emit_transfer(self.house, fee)
+            gl.ContractAt(self.house).emit_transfer(value=fee)
 
         self.wins[winner] = self.wins.get(winner, u256(0)) + u256(1)
         self.losses[loser] = self.losses.get(loser, u256(0)) + u256(1)

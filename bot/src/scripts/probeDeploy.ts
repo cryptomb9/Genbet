@@ -2,10 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient, createAccount } from "genlayer-js";
-import { testnetAsimov } from "genlayer-js/chains";
-import { TransactionStatus } from "genlayer-js/types";
+import { TransactionStatus, type Hash } from "genlayer-js/types";
 import { config } from "../config.js";
 import { loadOperatorKey } from "../deploy.js";
+import { chain } from "../genlayer.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONTRACT_PATH = path.resolve(__dirname, "../../contracts/bet_market.py");
@@ -13,7 +13,7 @@ const CONTRACT_PATH = path.resolve(__dirname, "../../contracts/bet_market.py");
 async function main() {
   const pk = loadOperatorKey();
   const account = createAccount(pk);
-  const client = createClient({ chain: testnetAsimov, account });
+  const client = createClient({ chain: chain(), account });
   console.log("operator:", account.address);
   const code = fs.readFileSync(CONTRACT_PATH, "utf8");
 
@@ -27,11 +27,10 @@ async function main() {
 
   console.log("polling receipt...");
   const receipt = (await client.waitForTransactionReceipt({
-    hash,
+    hash: hash as Hash,
     status: TransactionStatus.ACCEPTED,
     retries: 120,
     interval: 4000,
-    fullTransaction: true,
   })) as Record<string, unknown>;
   console.log("--- RECEIPT KEYS ---");
   console.log(Object.keys(receipt));

@@ -1,19 +1,19 @@
 import { createClient, createAccount } from "genlayer-js";
-import { testnetAsimov } from "genlayer-js/chains";
-import { TransactionStatus } from "genlayer-js/types";
+import { TransactionStatus, type Hash } from "genlayer-js/types";
 import { loadOperatorKey } from "../deploy.js";
+import { chain } from "../genlayer.js";
 
 const HASH = (process.argv[2] ??
   "0x1f5debf1ea094770049ef2b2d525cdb0ce3325e799435bca1b27e7cfc62da03f") as `0x${string}`;
 
 async function main() {
   const account = createAccount(loadOperatorKey());
-  const client = createClient({ chain: testnetAsimov, account });
+  const client = createClient({ chain: chain(), account });
   console.log("polling", HASH);
 
   for (let i = 0; i < 30; i++) {
     try {
-      const tx = (await client.getTransaction({ hash: HASH })) as Record<
+      const tx = (await client.getTransaction({ hash: HASH as Hash })) as Record<
         string,
         unknown
       >;
@@ -30,7 +30,7 @@ async function main() {
         console.log("recipient:", tx.recipient);
         console.log("txDataDecoded:", JSON.stringify(tx.txDataDecoded, null, 2));
         const r = (await client.waitForTransactionReceipt({
-          hash: HASH,
+          hash: HASH as Hash,
           status: TransactionStatus.ACCEPTED,
           retries: 1,
           interval: 1000,

@@ -1,7 +1,7 @@
 # BetBot — AI-resolved P2P betting on GenLayer
 
 A Telegram bot for **peer-to-peer betting on real-world events**, settled by an
-AI-judged Python intelligent contract on the **GenLayer testnet (Asimov)**.
+AI-judged Python intelligent contract on the **GenLayer testnet (Bradbury)**.
 
 In a group, tag the bot with a YES/NO claim and a stake:
 
@@ -45,7 +45,7 @@ Copy `.env.example` → `.env` and fill in:
 | `TELEGRAM_BOT_TOKEN` | from [@BotFather](https://t.me/BotFather) |
 | `HOUSE_FEE_ADDRESS` | wallet that receives the 10 % cut |
 | `HOUSE_FEE_BPS` | basis points (1000 = 10 %) |
-| `GENLAYER_NETWORK` | `testnet-asimov` (default) |
+| `GENLAYER_NETWORK` | `testnet-bradbury` (default) |
 | `AI_INTEGRATIONS_OPENAI_API_KEY` + `_BASE_URL` | OpenAI proxy creds |
 
 On Replit, the AI Integrations vars are set automatically.
@@ -68,7 +68,7 @@ pnpm --filter @workspace/bot run dev
 
 On first start the bot will:
 
-1. Deploy `contracts/bet_market.py` to GenLayer Asimov.
+1. Deploy `contracts/bet_market.py` to GenLayer Bradbury.
 2. Save the contract address in SQLite (`data/bot.sqlite`) and `data/.contract_address`.
 3. Start long-polling Telegram.
 
@@ -108,7 +108,7 @@ to start a bet. The opponent taps the inline button to lock their stake.
                                                  │ genlayer-js
                                                  ▼
                                        ┌──────────────────────┐
-                                       │ GenLayer Asimov RPC  │
+                                       │ GenLayer Bradbury RPC│
                                        │  BetMarket (Python)  │
                                        │  - create_bet        │
                                        │  - accept_bet        │
