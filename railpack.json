@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "node",
+  "packages": {
+    "node": "22",
+    "python": "3.13"
+  },
+  "buildAptPackages": ["build-essential", "python3", "pkg-config"],
+  "steps": {
+    "install": {
+      "commands": ["corepack enable", "pnpm install --frozen-lockfile"]
+    }
+  },
+  "deploy": {
+    "startCommand": "pnpm --filter @workspace/bot run start"
+  }
+}
