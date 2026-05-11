@@ -1,4 +1,5 @@
 import { Bot } from "grammy";
+import { run } from "@grammyjs/runner";
 import { config } from "./config.js";
 import { ensureContractDeployed } from "./deploy.js";
 import { registerCommands } from "./handlers/commands.js";
@@ -38,18 +39,28 @@ async function main() {
   // Make sure we receive group messages and callback queries.
   await bot.api.deleteWebhook({ drop_pending_updates: false }).catch(() => {});
 
-  process.once("SIGINT", () => bot.stop());
-  process.once("SIGTERM", () => bot.stop());
+  await bot.init();
+  const info = bot.botInfo;
+  console.log(`[bot] @${info.username} listening (concurrent long polling).`);
+  console.log(
+    "[bot] Add me to a group, grant message access, then tag me with a bet!",
+  );
 
-  await bot.start({
-    allowed_updates: ["message", "callback_query", "edited_message"],
-    onStart: (info) => {
-      console.log(`[bot] @${info.username} listening (long polling).`);
-      console.log(
-        "[bot] Add me to a group, grant message access, then tag me with a bet!",
-      );
+  const runner = run(bot, {
+    runner: {
+      fetch: {
+        allowed_updates: ["message", "callback_query", "edited_message"],
+      },
+    },
+    sink: {
+      concurrency: 20,
     },
   });
+
+  process.once("SIGINT", () => void runner.stop());
+  process.once("SIGTERM", () => void runner.stop());
+
+  await runner.task();
 }
 
 main().catch((err) => {

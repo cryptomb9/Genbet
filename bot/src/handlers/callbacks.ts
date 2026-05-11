@@ -19,6 +19,7 @@ import {
 } from "../format.js";
 import { resolutionLabel } from "../resolution.js";
 import { recordTxWatch } from "../status.js";
+import { acquireLock } from "../locks.js";
 
 interface PendingBet {
   id: string;
@@ -113,6 +114,15 @@ export function registerCallbacks(
       });
       return;
     }
+    const release = acquireLock(`pending:${id}`);
+    if (!release) {
+      await ctx.answerCallbackQuery({
+        text: "This bet is already being processed.",
+        show_alert: true,
+      });
+      return;
+    }
+    try {
     await ctx.answerCallbackQuery({ text: "Locking your stake on-chain…" });
     const w = getOrCreateUserWallet(
       ctx.from.id,
@@ -195,6 +205,9 @@ export function registerCallbacks(
       );
       setPendingStatus(id, "cancelled");
     }
+    } finally {
+      release();
+    }
   });
 
   bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
@@ -219,6 +232,14 @@ export function registerCallbacks(
     }
     if (pb.status === "open" && pb.onchain_bet_id) {
       // Cancel on-chain (refunds creator)
+      const release = acquireLock(`pending:${id}`);
+      if (!release) {
+        await ctx.answerCallbackQuery({
+          text: "This bet is already being processed.",
+          show_alert: true,
+        });
+        return;
+      }
       await ctx.answerCallbackQuery({ text: "Cancelling on-chain…" });
       const w = getOrCreateUserWallet(ctx.from.id, ctx.from.username || null);
       try {
@@ -244,6 +265,8 @@ export function registerCallbacks(
         await ctx.reply(`Cancel failed: ${escapeHtml(msg)}`, {
           parse_mode: "HTML",
         });
+      } finally {
+        release();
       }
       return;
     }
@@ -278,6 +301,14 @@ export function registerCallbacks(
       return;
     }
 
+    const release = acquireLock(`refund:${pb.onchain_bet_id}:${ctx.from.id}`);
+    if (!release) {
+      await ctx.answerCallbackQuery({
+        text: "Your refund request is already being processed.",
+        show_alert: true,
+      });
+      return;
+    }
     await ctx.answerCallbackQuery({ text: "Sending refund request on-chain..." });
     try {
       const hash = await retryOnchain("request_cancel_active", () =>
@@ -308,6 +339,8 @@ export function registerCallbacks(
       await ctx.reply(`Refund request failed: ${escapeHtml(msg)}`, {
         parse_mode: "HTML",
       });
+    } finally {
+      release();
     }
   });
 
@@ -329,6 +362,15 @@ export function registerCallbacks(
       });
       return;
     }
+    const release = acquireLock(`pending:${id}`);
+    if (!release) {
+      await ctx.answerCallbackQuery({
+        text: "This bet is already being processed.",
+        show_alert: true,
+      });
+      return;
+    }
+    try {
     await ctx.answerCallbackQuery({ text: "Matching stake on-chain…" });
     const handle =
       ctx.from.username || ctx.from.first_name || `user_${ctx.from.id}`;
@@ -373,6 +415,9 @@ export function registerCallbacks(
       await ctx.reply(`Accept failed: ${escapeHtml(msg)}`, {
         parse_mode: "HTML",
       });
+    }
+    } finally {
+      release();
     }
   });
 }

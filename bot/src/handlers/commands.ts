@@ -17,6 +17,7 @@ import {
   shortHash,
 } from "../format.js";
 import { recordTxWatch, renderStatusReport } from "../status.js";
+import { acquireLock } from "../locks.js";
 
 const FAUCET_URL = "https://testnet-faucet.genlayer.foundation";
 const ONCHAIN_RETRY_ATTEMPTS = 3;
@@ -224,6 +225,11 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
         await ctx.reply("Only the bet creator can cancel an open bet.");
         return;
       }
+      const release = acquireLock(`cancel:${getContract()}:${id}`);
+      if (!release) {
+        await ctx.reply(`Bet #${id} is already being cancelled.`);
+        return;
+      }
       await ctx.reply(`Cancelling open bet #${id}... refund will arrive after GenLayer finality.`);
       try {
         const hash = await retryOnchain("cancel_bet", () =>
@@ -251,6 +257,8 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
         await ctx.reply(`Cancel failed: ${escapeHtml(msg)}`, {
           parse_mode: "HTML",
         });
+      } finally {
+        release();
       }
       return;
     }
@@ -264,6 +272,11 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
       return;
     }
 
+    const release = acquireLock(`refund:${getContract()}:${id}:${ctx.from?.id ?? w.address}`);
+    if (!release) {
+      await ctx.reply(`Your refund request for bet #${id} is already being processed.`);
+      return;
+    }
     await ctx.reply(
       `Requesting mutual refund for bet #${id}... the other bettor must also run /refund ${id}.`,
     );
@@ -301,6 +314,8 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
       await ctx.reply(`Refund request failed: ${escapeHtml(msg)}`, {
         parse_mode: "HTML",
       });
+    } finally {
+      release();
     }
   });
 
@@ -327,6 +342,11 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
           bet.deadline * 1000,
         ).toISOString()}).`,
       );
+      return;
+    }
+    const release = acquireLock(`resolve:${getContract()}:${id}`);
+    if (!release) {
+      await ctx.reply(`Bet #${id} is already being resolved.`);
       return;
     }
     await ctx.reply(`Resolving bet #${id}... this may take 1-2 minutes.`);
@@ -367,6 +387,8 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await ctx.reply(`Resolve failed: ${escapeHtml(msg)}`);
+    } finally {
+      release();
     }
   });
 
