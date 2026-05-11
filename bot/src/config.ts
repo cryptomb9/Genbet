@@ -17,7 +17,7 @@ const NETWORK = (process.env.GENLAYER_NETWORK || "testnet-bradbury") as
   | "localnet";
 
 const DEFAULT_BRADBURY_BET_MARKET =
-  "0xA4EbeCE7E6c650D2F3b66D0A76708535188E5F52" as const;
+  "0xDDccAf4747c6aE5ef89A154Ab9E5013952116861" as const;
 
 export const config = {
   telegramToken: required("TELEGRAM_BOT_TOKEN"),
@@ -38,6 +38,8 @@ export const config = {
     | `0x${string}`
     | undefined,
   sessionSecret: process.env.SESSION_SECRET || "",
+  walletSeedSecret:
+    process.env.WALLET_SEED_SECRET || process.env.SESSION_SECRET || "",
   // OpenAI (Replit AI Integrations proxy or your own)
   openaiBaseUrl:
     process.env.AI_INTEGRATIONS_OPENAI_BASE_URL ||

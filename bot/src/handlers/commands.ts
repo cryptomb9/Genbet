@@ -1,17 +1,21 @@
 import type { Bot, Context } from "grammy";
+import { isAddress } from "viem";
 import { config } from "../config.js";
 import { db } from "../db.js";
-import { getOrCreateUserWallet } from "../wallet.js";
+import { getOrCreateUserWallet, importUserWallet } from "../wallet.js";
 import {
   bm,
   cancelBetOnchain,
+  estimateNativeTransferFeeWei,
   getBalanceWei,
   requestCancelActiveOnchain,
   resolveBetOnchain,
+  transferGen,
 } from "../genlayer.js";
 import {
   escapeHtml,
   genFromWei,
+  genToWei,
   renderBet,
   shortAddr,
   shortHash,
@@ -21,6 +25,7 @@ import { acquireLock } from "../locks.js";
 
 const FAUCET_URL = "https://testnet-faucet.genlayer.foundation";
 const ONCHAIN_RETRY_ATTEMPTS = 3;
+const DEFAULT_WITHDRAW_GAS_RESERVE_WEI = 21000n * 1_000_000_000n * 2n;
 
 async function retryOnchain<T>(
   opName: string,
@@ -54,12 +59,24 @@ function isLiveBet(status: string): boolean {
   return status === "open" || status === "active";
 }
 
+function isPrivateChat(ctx: Context): boolean {
+  return ctx.chat?.type === "private";
+}
+
+async function requirePrivateChat(ctx: Context, command: string): Promise<boolean> {
+  if (isPrivateChat(ctx)) return true;
+  await ctx.reply(
+    `For wallet safety, use /${command} only in my private DM, not in a group.`,
+  );
+  return false;
+}
+
 export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
   bot.command("start", async (ctx) => {
     const w = ensureUser(ctx);
     await ctx.reply(
       [
-        "<b>Welcome to BetBot</b>",
+        "<b>Welcome to Genbet</b>",
         "",
         "I run AI-resolved peer-to-peer bets on the GenLayer testnet.",
         "",
@@ -75,6 +92,9 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
         "<b>Commands</b>",
         "/wallet - show your address &amp; balance",
         "/deposit - how to fund your wallet",
+        "/withdraw &lt;address&gt; &lt;amount|all&gt; - move GEN out of your bot wallet",
+        "/exportwallet - show your private key in DM",
+        "/importwallet &lt;private_key&gt; CONFIRM - restore a wallet in DM",
         "/mybets - your open/active bets in this chat",
         "/mybetsall - your full bet history across all chats",
         "/openbets - list bets waiting for an opponent",
@@ -93,7 +113,7 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
     await ctx.reply(
       [
         "<b>Commands</b>",
-        "/wallet, /deposit, /mybets, /mybetsall, /openbets, /leaderboard, /refund &lt;id&gt;, /resolve &lt;id&gt;, /status &lt;id&gt;, /contract",
+        "/wallet, /deposit, /withdraw &lt;address&gt; &lt;amount|all&gt;, /exportwallet, /importwallet &lt;private_key&gt; CONFIRM, /mybets, /mybetsall, /openbets, /leaderboard, /refund &lt;id&gt;, /resolve &lt;id&gt;, /status &lt;id&gt;, /contract",
         "",
         "<b>Placing a bet (in groups)</b>",
         `Tag me with a YES/NO claim and a stake, e.g.\n@${ctx.me.username} 5 GEN the Lakers beat the Bulls tonight`,
@@ -137,6 +157,144 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
       ].join("\n"),
       { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
     );
+  });
+
+  bot.command("exportwallet", async (ctx) => {
+    if (!(await requirePrivateChat(ctx, "exportwallet"))) return;
+    const w = ensureUser(ctx);
+    await ctx.reply(
+      [
+        "<b>Your Genbet wallet backup</b>",
+        "",
+        `Address: <code>${w.address}</code>`,
+        `Private key: <code>${w.privateKey}</code>`,
+        "",
+        "Keep this private. Anyone with this key can spend the wallet balance.",
+        "There is no seed phrase for this bot wallet; this private key is the backup.",
+      ].join("\n"),
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.command("importwallet", async (ctx) => {
+    if (!(await requirePrivateChat(ctx, "importwallet"))) return;
+    const arg = (ctx.match as string | undefined)?.trim();
+    const parts = arg ? arg.split(/\s+/) : [];
+    const privateKey = parts[0] || "";
+    const confirmed = parts[1]?.toUpperCase() === "CONFIRM";
+    if (!privateKey) {
+      await ctx.reply("Usage: /importwallet <private_key> CONFIRM");
+      return;
+    }
+    if (!confirmed) {
+      await ctx.reply(
+        [
+          "This will replace the wallet Genbet uses for your Telegram account.",
+          "Bets and funds attached to the old wallet will not move automatically.",
+          "",
+          "Run again as:",
+          "<code>/importwallet &lt;private_key&gt; CONFIRM</code>",
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+
+    try {
+      const username = ctx.from?.username || ctx.from?.first_name || null;
+      const w = importUserWallet(ctx.from!.id, username, privateKey);
+      const bal = await getBalanceWei(w.address).catch(() => null);
+      await ctx.reply(
+        [
+          "<b>Wallet imported</b>",
+          `<code>${w.address}</code>`,
+          bal === null ? "" : `Balance: <b>${genFromWei(bal)} GEN</b>`,
+        ].filter(Boolean).join("\n"),
+        { parse_mode: "HTML" },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`Import failed: ${escapeHtml(msg)}`, {
+        parse_mode: "HTML",
+      });
+    }
+  });
+
+  bot.command("withdraw", async (ctx) => {
+    if (!(await requirePrivateChat(ctx, "withdraw"))) return;
+    const w = ensureUser(ctx);
+    const arg = (ctx.match as string | undefined)?.trim();
+    const parts = arg ? arg.split(/\s+/) : [];
+    const to = parts[0] as `0x${string}` | undefined;
+    const amountText = parts[1];
+
+    if (!to || !amountText || !isAddress(to)) {
+      await ctx.reply("Usage: /withdraw <0x_address> <amount|all>");
+      return;
+    }
+
+    const balance = await getBalanceWei(w.address);
+    const gasReserve =
+      (await estimateNativeTransferFeeWei().catch(() => DEFAULT_WITHDRAW_GAS_RESERVE_WEI)) * 2n;
+    let amountWei: bigint;
+
+    try {
+      if (amountText.toLowerCase() === "all") {
+        if (balance <= gasReserve) {
+          await ctx.reply(
+            `Balance is too low to withdraw after gas reserve. Balance: ${genFromWei(balance)} GEN`,
+          );
+          return;
+        }
+        amountWei = balance - gasReserve;
+      } else {
+        amountWei = genToWei(amountText);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`Invalid amount: ${escapeHtml(msg)}`, {
+        parse_mode: "HTML",
+      });
+      return;
+    }
+
+    if (amountWei <= 0n) {
+      await ctx.reply("Withdraw amount must be greater than 0.");
+      return;
+    }
+    if (amountWei + gasReserve > balance) {
+      await ctx.reply(
+        [
+          "Not enough free balance for that withdrawal plus gas.",
+          `Balance: <b>${genFromWei(balance)} GEN</b>`,
+          `Requested: <b>${genFromWei(amountWei)} GEN</b>`,
+          `Estimated gas reserve: <b>${genFromWei(gasReserve)} GEN</b>`,
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+
+    await ctx.reply(`Submitting withdrawal of ${genFromWei(amountWei)} GEN...`);
+    try {
+      const hash = await transferGen(w.privateKey, to, amountWei);
+      await ctx.reply(
+        [
+          "<b>Withdrawal submitted</b>",
+          `Amount: <b>${genFromWei(amountWei)} GEN</b>`,
+          `To: <code>${to}</code>`,
+          `tx: <code>${shortHash(hash)}</code>`,
+          "",
+          "If this wallet already has a queued transaction, this transfer may queue behind it.",
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`Withdraw failed: ${escapeHtml(msg)}`, {
+        parse_mode: "HTML",
+      });
+    }
   });
 
   bot.command("contract", async (ctx) => {

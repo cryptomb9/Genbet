@@ -18,7 +18,7 @@ console.log("operator:", account.address);
 
 const hash = await client.deployContract({
   code: CODE,
-  args: ["BetBot", 1000n],
+  args: ["Genbet", 1000n],
   leaderOnly: false,
 });
 console.log("hash:", hash);

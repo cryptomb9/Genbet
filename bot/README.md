@@ -1,6 +1,6 @@
-# BetBot - AI-resolved Telegram betting on GenLayer
+# Genbet - AI-resolved Telegram betting on GenLayer
 
-BetBot lets Telegram groups create peer-to-peer YES/NO bets that escrow and settle on GenLayer. Users talk to the bot in a group, confirm a bet, another user accepts the other side, and the contract resolves the outcome after the deadline using web evidence plus GenLayer validator consensus.
+Genbet lets Telegram groups create peer-to-peer YES/NO bets that escrow and settle on GenLayer. Users talk to the bot in a group, confirm a bet, another user accepts the other side, and the contract resolves the outcome after the deadline using web evidence plus GenLayer validator consensus.
 
 ## What It Does
 
@@ -46,10 +46,10 @@ The default network is Bradbury:
 
 ```env
 GENLAYER_NETWORK=testnet-bradbury
-BET_MARKET_ADDRESS=0xA4EbeCE7E6c650D2F3b66D0A76708535188E5F52
+BET_MARKET_ADDRESS=0xDDccAf4747c6aE5ef89A154Ab9E5013952116861
 ```
 
-The submission contract is pinned to `0xA4EbeCE7E6c650D2F3b66D0A76708535188E5F52` on Bradbury. Keep `BET_MARKET_ADDRESS` set when deploying so the hosted bot uses the known working contract instead of deploying a new one.
+The submission contract is pinned to `0xDDccAf4747c6aE5ef89A154Ab9E5013952116861` on Bradbury. Keep `BET_MARKET_ADDRESS` set when deploying so the hosted bot uses the known working contract instead of deploying a new one.
 
 The bot also caches the deployed contract address in SQLite under `settings.contract_address` and may use `data/.contract_address` for older runs. If you intentionally want a new contract, clear the cache before restarting:
 
@@ -65,6 +65,9 @@ Do not clear the cache or remove `BET_MARKET_ADDRESS` while users still care abo
 - `/start` - show wallet, network, contract, and usage.
 - `/wallet` - show your generated wallet and balance.
 - `/deposit` - show funding instructions.
+- `/withdraw <address> <amount|all>` - move free GEN out of your bot wallet.
+- `/exportwallet` - DM-only wallet private-key backup.
+- `/importwallet <private_key> CONFIRM` - DM-only wallet restore.
 - `/mybets` - show your open/active bets in the current group.
 - `/mybetsall` - show your full bet history across all groups.
 - `/openbets` - show bets waiting for an opponent.
@@ -105,6 +108,16 @@ python -m py_compile bot\contracts\bet_market.py
 Bradbury can take several minutes to accept and finalize transactions, especially resolver transactions that trigger validator work. Explorer indexing can lag behind the actual chain state. Always treat the contract read state as the source of truth.
 
 Payouts are not immediate at `resolve` time. The contract emits the winner/refund/house transfer messages, but balances move only after the transaction reaches successful finalization. The bot should describe this as "payout queued until finality" instead of "paid instantly."
+
+Transactions from the same wallet can queue behind each other at the chain nonce/RPC layer. One user's queued transaction should not stop the Telegram bot from responding, but a second transaction from the same wallet may wait behind the first one.
+
+## Wallet Persistence
+
+User private keys are stored in SQLite under `DATA_DIR`. On Railway, attach a Volume and mount it to the same path used by `DATA_DIR`, for example `/app/bot/data`. Without a volume, Railway redeploys can lose SQLite data and create new wallets.
+
+Set a stable `SESSION_SECRET` and preferably `WALLET_SEED_SECRET` in hosting variables. Existing wallets from SQLite still take priority, but new wallets can be regenerated from the stable seed if the database is lost.
+
+Users can run `/exportwallet` in a private DM to back up their private key. `/withdraw <address> <amount|all>` moves free wallet balance out of the bot wallet. Funds currently locked in active/open bets remain controlled by the GenLayer contract until cancel/resolve finality.
 
 ## Status Tracking
 

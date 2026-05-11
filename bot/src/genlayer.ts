@@ -1,6 +1,13 @@
 import { createClient, createAccount } from "genlayer-js";
 import { testnetAsimov, testnetBradbury, localnet } from "genlayer-js/chains";
 import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  type Address as ViemAddress,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import {
   ExecutionResult,
   TransactionStatus,
   type Address as GLAddress,
@@ -29,6 +36,45 @@ export async function getBalanceWei(
   const client = newClient();
   const bal = await client.getBalance({ address: address as GLAddress });
   return BigInt(bal as unknown as bigint);
+}
+
+function viemTransportUrl(): string {
+  return chain().rpcUrls.default.http[0];
+}
+
+function viemChain() {
+  return chain() as NonNullable<Parameters<typeof createPublicClient>[0]["chain"]>;
+}
+
+export async function estimateNativeTransferFeeWei(): Promise<bigint> {
+  const publicClient = createPublicClient({
+    chain: viemChain(),
+    transport: http(viemTransportUrl()),
+  });
+  const gasPrice = await publicClient.getGasPrice();
+  return gasPrice * 21000n;
+}
+
+export async function transferGen(
+  signerPk: `0x${string}`,
+  to: `0x${string}`,
+  amountWei: bigint,
+): Promise<`0x${string}`> {
+  if (amountWei <= 0n) throw new Error("Withdraw amount must be greater than 0.");
+  const account = privateKeyToAccount(signerPk);
+  const walletClient = createWalletClient({
+    account,
+    chain: viemChain(),
+    transport: http(viemTransportUrl()),
+  });
+
+  return walletClient.sendTransaction({
+    account,
+    chain: viemChain(),
+    to: to as ViemAddress,
+    value: amountWei,
+    gas: 21000n,
+  } as Parameters<typeof walletClient.sendTransaction>[0]);
 }
 
 export async function deployBetMarket(
