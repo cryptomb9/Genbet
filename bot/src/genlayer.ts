@@ -43,14 +43,26 @@ export async function deployBetMarket(
   })) as Hash;
   console.log(`[deploy] tx hash: ${hash}`);
 
-  // GenLayer testnet can take several minutes to reach ACCEPTED. The contract
-  // address (recipient) is known as soon as the tx is at least PROPOSING (>=2).
-  // Poll getTransaction and pull the address out as soon as it's there.
-  const ZERO = "0x" + "0".repeat(40);
   const isAddr = (s: unknown): s is string =>
     typeof s === "string" && /^0x[0-9a-fA-F]{40}$/.test(s) && s !== ZERO;
+  const isTerminalFailure = (statusName: string) =>
+    ["CANCELED", "LEADER_TIMEOUT", "VALIDATORS_TIMEOUT"].includes(statusName);
+  const isReadableBetMarket = async (candidate: string): Promise<boolean> => {
+    try {
+      await client.readContract({
+        address: candidate as GLAddress,
+        functionName: "stats",
+        args: [],
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
-  for (let i = 0; i < 60; i++) {
+  // Do not cache the deployment address until the contract is actually
+  // readable. Bradbury can expose the recipient before the deploy has landed.
+  for (let i = 0; i < 120; i++) {
     try {
       const tx = (await client.getTransaction({ hash })) as Record<
         string,
@@ -73,11 +85,11 @@ export async function deployBetMarket(
           `[deploy] poll ${i}: status=${status} (${statusName}) recipient=${recipient ?? "none"}`,
         );
       }
-      if (candidate && status >= 2) {
+      if (candidate && (await isReadableBetMarket(candidate))) {
         console.log(`[deploy] contract address: ${candidate}`);
         return candidate as `0x${string}`;
       }
-      if (statusName === "CANCELED" || statusName === "LEADER_TIMEOUT") {
+      if (isTerminalFailure(statusName)) {
         throw new Error(`Deploy failed on-chain: ${statusName}`);
       }
     } catch (e) {
@@ -85,11 +97,9 @@ export async function deployBetMarket(
     }
     await new Promise((r) => setTimeout(r, 4000));
   }
-  // Fall back to the slower waitForTransactionReceipt path so we still surface
-  // a clear error if anything is genuinely stuck.
   void TransactionStatus.ACCEPTED;
   throw new Error(
-    `Deploy did not produce a contract address within 4 minutes for hash ${hash}`,
+    `Deploy did not produce a readable contract within 10 minutes for hash ${hash}`,
   );
 }
 
@@ -110,6 +120,7 @@ export interface OnchainBet {
   created_at: number;
   chat_id: string;
   reasoning: string;
+  cancel_requested_by?: string;
 }
 
 async function read<T>(
@@ -435,6 +446,21 @@ export async function cancelBetOnchain(
   const { hash } = await writeAndWait(client, {
     address: contract,
     functionName: "cancel_bet",
+    args: [betId],
+    value: 0n,
+  });
+  return hash;
+}
+
+export async function requestCancelActiveOnchain(
+  contract: `0x${string}`,
+  signerPk: `0x${string}`,
+  betId: number,
+): Promise<`0x${string}`> {
+  const client = newClient(signerPk);
+  const { hash } = await writeAndWait(client, {
+    address: contract,
+    functionName: "request_cancel_active",
     args: [betId],
     value: 0n,
   });

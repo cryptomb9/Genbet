@@ -14,12 +14,13 @@ import {
   genFromWei,
   genToWei,
 } from "../format.js";
+import { planResolution, resolutionLabel } from "../resolution.js";
 
 function shortId(): string {
   return crypto.randomBytes(4).toString("hex");
 }
 
-const MIN_DEADLINE_BUFFER_SECONDS = 30 * 60;
+const MIN_DEADLINE_BUFFER_SECONDS = 10 * 60;
 
 function botMentioned(ctx: Context): boolean {
   const text = ctx.message?.text || ctx.message?.caption;
@@ -111,12 +112,28 @@ export function registerGroupHandler(
       Date.parse(parsed.deadline_iso!) / 1000,
     );
     const deadlineUnix = Math.max(parsedDeadlineUnix, minDeadlineUnix);
+    const createdAtUnix = Math.floor(Date.now() / 1000);
+    const plannedResolution = planResolution(
+      parsed.question!,
+      createdAtUnix,
+      deadlineUnix,
+    );
+    if (plannedResolution && "error" in plannedResolution) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        thinking.message_id,
+        plannedResolution.error,
+      );
+      return;
+    }
+    const resolutionUrl =
+      plannedResolution?.resolutionUrl || parsed.resolution_url || "";
     db.prepare(
       `INSERT INTO pending_bets (
          id, chat_id, creator_tg_id, creator_handle, question, deadline,
          creator_yes, stake_wei, resolution_url, target_tg_id, target_handle,
-         status, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting', ?)`,
+         contract_address, status, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting', ?)`,
     ).run(
       id,
       ctx.chat.id,
@@ -126,10 +143,11 @@ export function registerGroupHandler(
       deadlineUnix,
       parsed.creator_yes ? 1 : 0,
       stakeWei.toString(),
-      parsed.resolution_url || "",
+      resolutionUrl,
       null,
       parsed.opponent_handle || null,
-      Math.floor(Date.now() / 1000),
+      getContract(),
+      createdAtUnix,
     );
 
     const yesSide = parsed.creator_yes ? "YES" : "NO";
@@ -143,8 +161,8 @@ export function registerGroupHandler(
         ? `🎯 Challenging: <b>@${escapeHtml(parsed.opponent_handle)}</b> (or anyone) — must match on <b>${noSide}</b>`
         : `Open to anyone willing to take <b>${noSide}</b>`,
       `⏰ Deadline: ${deadlineHuman(deadlineUnix)}`,
-      parsed.resolution_url
-        ? `🔗 Source hint: ${escapeHtml(parsed.resolution_url)}`
+      resolutionUrl
+        ? `🔗 Source: ${escapeHtml(resolutionLabel(resolutionUrl))}`
         : "",
       ``,
       `<i>@${escapeHtml(handle)} — confirm to lock your stake on-chain.</i>`,

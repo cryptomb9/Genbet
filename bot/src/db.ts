@@ -25,6 +25,7 @@ db.exec(`
     resolution_url  TEXT NOT NULL DEFAULT '',
     target_tg_id    INTEGER,                  -- if proposed to a specific user
     target_handle   TEXT,
+    contract_address TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL DEFAULT 'awaiting',
     -- 'awaiting'   : creator must confirm staking
     -- 'open'       : on-chain, awaiting opponent
@@ -38,7 +39,29 @@ db.exec(`
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS tx_watches (
+    tx_hash          TEXT PRIMARY KEY,
+    contract_address TEXT NOT NULL,
+    onchain_bet_id   INTEGER,
+    chat_id          INTEGER NOT NULL,
+    kind             TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'SUBMITTED',
+    execution        TEXT NOT NULL DEFAULT '',
+    message          TEXT NOT NULL DEFAULT '',
+    notified_at      INTEGER,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+  );
 `);
+
+const pendingBetColumns = db
+  .prepare("PRAGMA table_info(pending_bets)")
+  .all() as Array<{ name: string }>;
+
+if (!pendingBetColumns.some((c) => c.name === "contract_address")) {
+  db.exec("ALTER TABLE pending_bets ADD COLUMN contract_address TEXT NOT NULL DEFAULT ''");
+}
 
 export function getSetting(key: string): string | undefined {
   const row = db

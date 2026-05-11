@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { config } from "./config.js";
 import { getSetting, setSetting } from "./db.js";
-import { deployBetMarket, getBalanceWei } from "./genlayer.js";
+import { bm, deployBetMarket, getBalanceWei } from "./genlayer.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONTRACT_PATH = path.resolve(__dirname, "../contracts/bet_market.py");
@@ -22,19 +22,38 @@ export function loadOperatorKey(): `0x${string}` {
   return pk;
 }
 
+async function isUsableBetMarket(addr: string): Promise<boolean> {
+  if (!addr.startsWith("0x")) return false;
+  try {
+    await bm.stats(addr as `0x${string}`);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[deploy] Ignoring unusable cached contract ${addr}: ${msg}`);
+    return false;
+  }
+}
+
 export async function ensureContractDeployed(): Promise<`0x${string}`> {
   // 1. Explicit override wins.
   if (config.betMarketAddress) {
+    if (!(await isUsableBetMarket(config.betMarketAddress))) {
+      throw new Error(
+        `BET_MARKET_ADDRESS is set but is not readable on ${config.network}: ${config.betMarketAddress}`,
+      );
+    }
     setSetting("contract_address", config.betMarketAddress);
     return config.betMarketAddress;
   }
   // 2. DB cache.
   const cached = getSetting("contract_address");
-  if (cached) return cached as `0x${string}`;
+  if (cached && (await isUsableBetMarket(cached))) {
+    return cached as `0x${string}`;
+  }
   // 3. Legacy file cache.
   if (fs.existsSync(config.contractAddrPath)) {
     const a = fs.readFileSync(config.contractAddrPath, "utf8").trim();
-    if (a.startsWith("0x")) {
+    if (await isUsableBetMarket(a)) {
       setSetting("contract_address", a);
       return a as `0x${string}`;
     }

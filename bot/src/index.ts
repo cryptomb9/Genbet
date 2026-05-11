@@ -4,6 +4,7 @@ import { ensureContractDeployed } from "./deploy.js";
 import { registerCommands } from "./handlers/commands.js";
 import { registerGroupHandler } from "./handlers/group.js";
 import { registerCallbacks } from "./handlers/callbacks.js";
+import { startTxStatusWatcher } from "./status.js";
 
 async function main() {
   console.log(`[bot] Starting on network=${config.network}`);
@@ -28,6 +29,7 @@ async function main() {
   registerCommands(bot, getContract);
   registerCallbacks(bot, getContract);
   registerGroupHandler(bot, getContract);
+  startTxStatusWatcher(bot);
 
   bot.catch((err) => {
     console.error("[bot] handler error:", err);

@@ -1,173 +1,117 @@
-# BetBot — AI-resolved P2P betting on GenLayer
+# BetBot - AI-resolved Telegram betting on GenLayer
 
-A Telegram bot for **peer-to-peer betting on real-world events**, settled by an
-AI-judged Python intelligent contract on the **GenLayer testnet (Bradbury)**.
+BetBot lets Telegram groups create peer-to-peer YES/NO bets that escrow and settle on GenLayer. Users talk to the bot in a group, confirm a bet, another user accepts the other side, and the contract resolves the outcome after the deadline using web evidence plus GenLayer validator consensus.
 
-In a group, tag the bot with a YES/NO claim and a stake:
+## What It Does
 
-> **@yourbot** I bet 5 GEN the Lakers beat the Bulls tonight — anyone?
+- Parses natural-language bet proposals from Telegram group messages.
+- Creates one wallet per Telegram user and checks their Bradbury GEN balance.
+- Locks the creator stake with `create_bet`.
+- Lets another user match the stake with `accept_bet`.
+- Resolves the bet after the deadline with `resolve`.
+- Supports typed crypto price bets through Coinbase candle data.
+- Pays the winner, or refunds both sides when the result is unclear or both active bettors agree to cancel.
 
-The bot parses the bet, posts a confirm card, and once the creator presses
-**Confirm & stake** the bet is locked on-chain. Anyone can take the other side
-by tapping **Take NO**. After the deadline, anyone can `/resolve <id>` and the
-contract reads the web + asks an LLM whether the claim was true. Winner gets
-**90 %** of the pot, **10 %** goes to the house wallet.
+## How Settlement Works
 
----
+1. A user tags the bot in a group with a claim, stake, and deadline.
+2. The bot asks the creator to confirm before staking.
+3. `create_bet` locks the creator stake in the GenLayer contract.
+4. Another user accepts and `accept_bet` locks the matching stake.
+5. After the deadline, `/resolve <id>` asks the contract to settle the claim.
+6. Crypto price bets use Coinbase 1-minute candles when the claim has a clear trigger such as `BTC touches 80500`.
+7. Other supported public-fact bets fetch evidence from the creator's source URL when provided, otherwise they search the web.
+8. A GenLayer resolver returns `YES`, `NO`, or `UNCLEAR`, and validators compare the verdict through GenLayer consensus.
+9. `YES` or `NO` pays the winning side 90 percent of the pot and sends 10 percent to the house wallet.
+10. `UNCLEAR` refunds both bettors with no house fee.
+11. Payout/refund messages are queued by the contract at resolution/cancellation time, then the GEN transfer lands after the GenLayer transaction successfully finalizes on Bradbury.
 
-## Features
+## Refunds And Cancellations
 
-- 🤖 Natural-language bet parsing (OpenAI / Replit AI Integrations)
-- 🐍 Python intelligent contract `BetMarket` deployed once, auto-cached
-- 👛 Per-user wallets generated on first interaction, encrypted at rest (AES-256-GCM)
-- ⏰ Deadline-gated resolution; `/resolve <id>` is callable by anyone
-- 🌐 LLM consensus via `gl.eq_principle.strict_eq` over web evidence
-- 🏆 `/leaderboard`, `/mybets`, `/openbets`, `/wallet`, `/deposit`, `/contract`
-- 💸 House fee paid to a configurable address (default 10 %, in basis points)
-- 🔁 Auto-deploy: first run deploys the contract; address is cached in SQLite
+- Before creator confirmation: the Telegram proposal can be cancelled without any on-chain action.
+- After creator confirmation but before acceptance: the creator can cancel and the contract refunds their stake.
+- After acceptance: either bettor can run `/refund <id>` to request a mutual refund.
+- The active bet only cancels after the other bettor also runs `/refund <id>`.
+- After the deadline, `/resolve <id>` settles normally.
 
----
+This is the same basic shape used by GenLayer claim-market projects such as Proven: claim creation, escrow, evidence sourcing, AI judgment, validator agreement, then on-chain settlement.
 
-## Quick start
+## Why It Stays GenLayer-native
 
-### 1. Install
+The settlement decision is made inside the GenLayer intelligent contract, not by the Telegram bot. The bot only prepares user actions and sends transactions. Funds are escrowed by the contract, and final payout/refund logic runs on-chain.
+
+## Network
+
+The default network is Bradbury:
+
+```env
+GENLAYER_NETWORK=testnet-bradbury
+BET_MARKET_ADDRESS=0xA4EbeCE7E6c650D2F3b66D0A76708535188E5F52
+```
+
+The submission contract is pinned to `0xA4EbeCE7E6c650D2F3b66D0A76708535188E5F52` on Bradbury. Keep `BET_MARKET_ADDRESS` set when deploying so the hosted bot uses the known working contract instead of deploying a new one.
+
+The bot also caches the deployed contract address in SQLite under `settings.contract_address` and may use `data/.contract_address` for older runs. If you intentionally want a new contract, clear the cache before restarting:
+
+```bash
+pnpm --filter @workspace/bot run clear-contract-cache
+pnpm --filter @workspace/bot run start
+```
+
+Do not clear the cache or remove `BET_MARKET_ADDRESS` while users still care about active bets on the current contract. A redeploy starts a new contract with its own bet IDs.
+
+## Commands
+
+- `/start` - show wallet, network, contract, and usage.
+- `/wallet` - show your generated wallet and balance.
+- `/deposit` - show funding instructions.
+- `/mybets` - show your open/active bets in the current group.
+- `/mybetsall` - show your full bet history across all groups.
+- `/openbets` - show bets waiting for an opponent.
+- `/leaderboard` - show resolved-bet winners.
+- `/refund <id>` - cancel an open bet or request mutual refund on an active bet.
+- `/resolve <id>` - settle an active bet after its deadline.
+- `/status <id>` - show bet state and tracked transaction finality.
+- `/contract` - show the active contract address.
+
+## Development
+
+Install dependencies from the repo root:
 
 ```bash
 pnpm install
 ```
 
-### 2. Configure
-
-Copy `.env.example` → `.env` and fill in:
-
-| Var | What |
-| --- | --- |
-| `TELEGRAM_BOT_TOKEN` | from [@BotFather](https://t.me/BotFather) |
-| `HOUSE_FEE_ADDRESS` | wallet that receives the 10 % cut |
-| `HOUSE_FEE_BPS` | basis points (1000 = 10 %) |
-| `GENLAYER_NETWORK` | `testnet-bradbury` (default) |
-| `AI_INTEGRATIONS_OPENAI_API_KEY` + `_BASE_URL` | OpenAI proxy creds |
-
-On Replit, the AI Integrations vars are set automatically.
-
-### 3. Fund the operator wallet
-
-The bot generates an **operator wallet** on first run and prints its address.
-This wallet pays gas to deploy the contract. Send it some testnet GEN:
-
-> https://testnet-faucet.genlayer.foundation
-
-The address is also saved to `data/.operator_key` (raw private key — back it up
-or set `OPERATOR_PRIVATE_KEY` in `.env` instead).
-
-### 4. Start
+Run the bot:
 
 ```bash
-pnpm --filter @workspace/bot run dev
+pnpm --filter @workspace/bot run start
 ```
 
-On first start the bot will:
+Run TypeScript validation:
 
-1. Deploy `contracts/bet_market.py` to GenLayer Bradbury.
-2. Save the contract address in SQLite (`data/bot.sqlite`) and `data/.contract_address`.
-3. Start long-polling Telegram.
-
-Add the bot to a group and **disable Privacy Mode** in @BotFather
-(`/mybots → Bot Settings → Group Privacy → Turn off`) so it can read messages.
-
----
-
-## Bot commands
-
-| Command | Meaning |
-| --- | --- |
-| `/start`, `/help` | onboarding |
-| `/wallet` | your address & balance |
-| `/deposit` | how to fund your wallet |
-| `/mybets` | bets you're in |
-| `/openbets` | bets waiting for an opponent |
-| `/leaderboard` | top earners (cumulative profit) |
-| `/resolve <id>` | settle a bet whose deadline passed (anyone can call) |
-| `/contract` | the deployed `BetMarket` address |
-
-In a group, **tag the bot** with a sentence like
-"I bet 3 GEN the SpaceX Starship lands successfully on April 30 — anyone?"
-to start a bet. The opponent taps the inline button to lock their stake.
-
----
-
-## Architecture
-
-```
-┌────────────────────┐    long-poll    ┌──────────────────────┐
-│  Telegram (groups) │ ─────────────▶  │  bot/ (Node + grammY)│
-└────────────────────┘                 │   parser (OpenAI)    │
-                                       │   per-user wallets   │
-                                       │   SQLite (sessions)  │
-                                       └─────────┬────────────┘
-                                                 │ genlayer-js
-                                                 ▼
-                                       ┌──────────────────────┐
-                                       │ GenLayer Bradbury RPC│
-                                       │  BetMarket (Python)  │
-                                       │  - create_bet        │
-                                       │  - accept_bet        │
-                                       │  - resolve  (LLM)    │
-                                       │  - emit_transfer 90/10│
-                                       └──────────────────────┘
+```bash
+pnpm --filter @workspace/bot run typecheck
 ```
 
-Bet lifecycle:
+Compile-check the contract:
 
-1. Group message tagged → AI parses → confirm card posted.
-2. Creator taps **Confirm & stake** → `create_bet` (payable) on-chain.
-3. Opponent taps **Take NO** → `accept_bet` (payable) on-chain.
-4. After `deadline`, anyone calls `/resolve <id>` → contract fetches web
-   evidence (`gl.nondet.web.get`), asks the LLM
-   (`gl.nondet.exec_prompt`), wraps it in `gl.eq_principle.strict_eq`, and
-   pays out via `gl.emit_transfer` (winner 90 %, house 10 %).
-5. `UNCLEAR` outcomes refund both sides with no fee.
-
----
-
-## File map
-
-```
-bot/
-├── contracts/bet_market.py     # GenLayer Python intelligent contract
-├── src/
-│   ├── index.ts                # bot entrypoint
-│   ├── config.ts               # env + paths
-│   ├── crypto.ts               # AES-256-GCM key wrap
-│   ├── db.ts                   # SQLite (better-sqlite3) schema
-│   ├── wallet.ts               # per-user wallet generation
-│   ├── genlayer.ts             # genlayer-js client + BetMarket calls
-│   ├── deploy.ts               # auto-deploy on first run
-│   ├── parser.ts               # OpenAI bet-parsing prompt
-│   ├── format.ts               # message rendering helpers
-│   ├── handlers/
-│   │   ├── commands.ts         # /start /wallet /resolve …
-│   │   ├── group.ts            # @bot mentions in groups
-│   │   └── callbacks.ts        # Confirm / Cancel / Accept buttons
-│   └── scripts/deployContract.ts  # standalone deploy helper
-├── data/                        # SQLite + cached keys (gitignored)
-├── .env.example
-└── README.md
+```bash
+python -m py_compile bot\contracts\bet_market.py
 ```
 
+## Known Testnet Behavior
 
-## Security notes
+Bradbury can take several minutes to accept and finalize transactions, especially resolver transactions that trigger validator work. Explorer indexing can lag behind the actual chain state. Always treat the contract read state as the source of truth.
 
-- Per-user private keys are encrypted with AES-256-GCM under a 32-byte key.
-  The key comes from `SESSION_SECRET` (env) or `data/.session_key` (auto-gen).
-  **Lose the key → lose the wallets.** Back it up.
-- The operator wallet only pays gas + deploys the contract. It does **not**
-  hold user stakes.
-- Stakes are held by the on-chain `BetMarket` contract until resolution.
-- This is a testnet toy. Do not put real money on it.
+Payouts are not immediate at `resolve` time. The contract emits the winner/refund/house transfer messages, but balances move only after the transaction reaches successful finalization. The bot should describe this as "payout queued until finality" instead of "paid instantly."
 
----
+## Status Tracking
 
-## License
+The bot records GenLayer transaction hashes for bet creation, acceptance, cancellation, refund requests, and resolution in SQLite. A background watcher polls those transactions and posts a Telegram update when a tracked transaction finalizes. Users can also run `/status <id>` to see the current bet state and the known transaction finality state.
 
-MIT
+If a transaction is accepted but the bet is still active, inspect the transaction hash and triggered validator transactions. If the contract code changed locally after deployment, the existing on-chain contract will not pick up that change; clear the contract cache and redeploy for new tests.
+
+## Security Model
+
+This is testnet software. The bot stores generated wallet keys locally in SQLite, so do not run it with real funds. Keep `.env` private and never commit bot tokens, API keys, or private keys.

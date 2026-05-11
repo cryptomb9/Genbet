@@ -1,5 +1,6 @@
 import { formatEther } from "viem";
 import type { OnchainBet } from "./genlayer.js";
+import { resolutionLabel } from "./resolution.js";
 
 export function escapeHtml(s: string): string {
   return s
@@ -67,14 +68,27 @@ export function renderBet(b: OnchainBet): string {
     }`,
   );
   lines.push(`⏰ Deadline: ${deadlineHuman(b.deadline)}`);
-  if (b.resolution_url) lines.push(`🔗 Source hint: ${escapeHtml(b.resolution_url)}`);
-  if (b.status === "resolved") {
+  if (b.resolution_url) {
+    lines.push(`Source: ${escapeHtml(resolutionLabel(b.resolution_url))}`);
+  }
+  if (
+    b.status === "active" &&
+    b.cancel_requested_by &&
+    b.cancel_requested_by !== "0x0000000000000000000000000000000000000000"
+  ) {
+    lines.push(`Refund requested by <code>${shortAddr(b.cancel_requested_by)}</code>`);
+  }
+  if (b.status === "cancelled") {
+    lines.push("Status: <b>cancelled</b> - refund settles after finality");
+    if (b.reasoning) lines.push(`<i>${escapeHtml(b.reasoning)}</i>`);
+  } else if (b.status === "resolved") {
     if (b.outcome === "UNCLEAR") {
-      lines.push("⚖️ <b>UNCLEAR</b> — both sides refunded");
+      lines.push("⚖️ <b>UNCLEAR</b> — refunds settle after finality");
     } else {
       lines.push(
         `🏆 Outcome: <b>${b.outcome}</b> — winner: <code>${shortAddr(b.winner)}</code>`,
       );
+      lines.push("Payout settles after successful finality.");
     }
     if (b.reasoning) lines.push(`💭 <i>${escapeHtml(b.reasoning)}</i>`);
   } else {

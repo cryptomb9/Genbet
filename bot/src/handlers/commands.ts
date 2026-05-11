@@ -1,8 +1,22 @@
 import type { Bot, Context } from "grammy";
 import { config } from "../config.js";
+import { db } from "../db.js";
 import { getOrCreateUserWallet } from "../wallet.js";
-import { bm, getBalanceWei, resolveBetOnchain } from "../genlayer.js";
-import { escapeHtml, genFromWei, renderBet, shortAddr } from "../format.js";
+import {
+  bm,
+  cancelBetOnchain,
+  getBalanceWei,
+  requestCancelActiveOnchain,
+  resolveBetOnchain,
+} from "../genlayer.js";
+import {
+  escapeHtml,
+  genFromWei,
+  renderBet,
+  shortAddr,
+  shortHash,
+} from "../format.js";
+import { recordTxWatch, renderStatusReport } from "../status.js";
 
 const FAUCET_URL = "https://testnet-faucet.genlayer.foundation";
 const ONCHAIN_RETRY_ATTEMPTS = 3;
@@ -35,6 +49,10 @@ function ensureUser(ctx: Context) {
   return getOrCreateUserWallet(u.id, u.username || u.first_name || null);
 }
 
+function isLiveBet(status: string): boolean {
+  return status === "open" || status === "active";
+}
+
 export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
   bot.command("start", async (ctx) => {
     const w = ensureUser(ctx);
@@ -56,11 +74,13 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
         "<b>Commands</b>",
         "/wallet - show your address &amp; balance",
         "/deposit - how to fund your wallet",
-        "/mybets - your bets in this chat",
-        "/mybetsall - your bets across all chats",
+        "/mybets - your open/active bets in this chat",
+        "/mybetsall - your full bet history across all chats",
         "/openbets - list bets waiting for an opponent",
         "/leaderboard - top earners",
+        "/refund &lt;id&gt; - cancel open bet or request mutual refund",
         "/resolve &lt;id&gt; - settle a bet whose deadline has passed",
+        "/status &lt;id&gt; - show bet and transaction finality status",
         "/contract - show the deployed contract address",
         "/help - show this message",
       ].join("\n"),
@@ -72,7 +92,7 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
     await ctx.reply(
       [
         "<b>Commands</b>",
-        "/wallet, /deposit, /mybets, /mybetsall, /openbets, /leaderboard, /resolve &lt;id&gt;, /contract",
+        "/wallet, /deposit, /mybets, /mybetsall, /openbets, /leaderboard, /refund &lt;id&gt;, /resolve &lt;id&gt;, /status &lt;id&gt;, /contract",
         "",
         "<b>Placing a bet (in groups)</b>",
         `Tag me with a YES/NO claim and a stake, e.g.\n@${ctx.me.username} 5 GEN the Lakers beat the Bulls tonight`,
@@ -127,18 +147,19 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
 
   bot.command("mybets", async (ctx) => {
     const w = ensureUser(ctx);
-    const bets = await bm.myBets(getContract(), w.address, 10);
+    const bets = await bm.myBets(getContract(), w.address, 20);
     const inGroup = ctx.chat.type === "group" || ctx.chat.type === "supergroup";
-    const visible = inGroup
+    const scoped = inGroup
       ? bets.filter((b) => String(b.chat_id) === String(ctx.chat.id))
       : bets;
+    const visible = scoped.filter((b) => isLiveBet(b.status));
 
-    if (inGroup && visible.length === 0) {
-      await ctx.reply("You have no bets in this group yet.");
-      return;
-    }
-    if (bets.length === 0) {
-      await ctx.reply("You have no bets yet. Tag me in a group to start one.");
+    if (visible.length === 0) {
+      await ctx.reply(
+        inGroup
+          ? "You have no open or active bets in this group."
+          : "You have no open or active bets.",
+      );
       return;
     }
     await ctx.reply(visible.map(renderBet).join("\n\n"), { parse_mode: "HTML" });
@@ -179,6 +200,110 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
     await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
   });
 
+  bot.command("refund", async (ctx) => {
+    const w = ensureUser(ctx);
+    const arg = (ctx.match as string | undefined)?.trim();
+    const id = arg ? Number(arg) : NaN;
+    if (!Number.isFinite(id) || id <= 0) {
+      await ctx.reply("Usage: /refund <bet_id>");
+      return;
+    }
+
+    const bet = await bm.getBet(getContract(), id);
+    if (!bet) {
+      await ctx.reply(`Bet #${id} not found.`);
+      return;
+    }
+
+    const userAddr = w.address.toLowerCase();
+    const isCreator = bet.creator.toLowerCase() === userAddr;
+    const isAccepter = bet.accepter.toLowerCase() === userAddr;
+
+    if (bet.status === "open") {
+      if (!isCreator) {
+        await ctx.reply("Only the bet creator can cancel an open bet.");
+        return;
+      }
+      await ctx.reply(`Cancelling open bet #${id}... refund will arrive after GenLayer finality.`);
+      try {
+        const hash = await retryOnchain("cancel_bet", () =>
+          cancelBetOnchain(getContract(), w.privateKey, id),
+        );
+        recordTxWatch({
+          txHash: hash,
+          contract: getContract(),
+          betId: id,
+          chatId: ctx.chat.id,
+          kind: "cancel_bet",
+        });
+        db.prepare(
+          `UPDATE pending_bets
+             SET status = 'cancelled', contract_address = ?
+           WHERE onchain_bet_id = ?
+             AND (contract_address = ? OR contract_address = '')`,
+        ).run(getContract(), id, getContract());
+        await ctx.reply(
+          `Bet #${id} cancelled. Refund queued until finality. tx: <code>${shortHash(hash)}</code>`,
+          { parse_mode: "HTML" },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await ctx.reply(`Cancel failed: ${escapeHtml(msg)}`, {
+          parse_mode: "HTML",
+        });
+      }
+      return;
+    }
+
+    if (bet.status !== "active") {
+      await ctx.reply(`Bet #${id} cannot be refunded now (status: ${bet.status}).`);
+      return;
+    }
+    if (!isCreator && !isAccepter) {
+      await ctx.reply("Only one of the two bettors can request this refund.");
+      return;
+    }
+
+    await ctx.reply(
+      `Requesting mutual refund for bet #${id}... the other bettor must also run /refund ${id}.`,
+    );
+    try {
+      const hash = await retryOnchain("request_cancel_active", () =>
+        requestCancelActiveOnchain(getContract(), w.privateKey, id),
+      );
+      recordTxWatch({
+        txHash: hash,
+        contract: getContract(),
+        betId: id,
+        chatId: ctx.chat.id,
+        kind: "request_cancel_active",
+      });
+      const updated = await bm.getBet(getContract(), id);
+      if (updated?.status === "cancelled") {
+        db.prepare(
+          `UPDATE pending_bets
+             SET status = 'cancelled', contract_address = ?
+           WHERE onchain_bet_id = ?
+             AND (contract_address = ? OR contract_address = '')`,
+        ).run(getContract(), id, getContract());
+        await ctx.reply(
+          `Both sides agreed. Bet #${id} cancelled. Refunds queued until finality. tx: <code>${shortHash(hash)}</code>`,
+          { parse_mode: "HTML" },
+        );
+        return;
+      }
+      const tail = updated ? `\n\n${renderBet(updated)}` : "";
+      await ctx.reply(`Refund request recorded. tx: <code>${shortHash(hash)}</code>${tail}`, {
+        parse_mode: "HTML",
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`Refund request failed: ${escapeHtml(msg)}`, {
+        parse_mode: "HTML",
+      });
+    }
+  });
+
   bot.command("resolve", async (ctx) => {
     const w = ensureUser(ctx);
     const arg = (ctx.match as string | undefined)?.trim();
@@ -209,9 +334,34 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
       const hash = await retryOnchain("resolve", () =>
         resolveBetOnchain(getContract(), w.privateKey, id),
       );
+      recordTxWatch({
+        txHash: hash,
+        contract: getContract(),
+        betId: id,
+        chatId: ctx.chat.id,
+        kind: "resolve",
+      });
       const updated = await bm.getBet(getContract(), id);
+      if (updated?.status === "resolved") {
+        db.prepare(
+          `UPDATE pending_bets
+             SET status = 'resolved', contract_address = ?
+           WHERE onchain_bet_id = ?
+             AND question = ?
+             AND deadline = ?
+             AND stake_wei = ?
+             AND (contract_address = ? OR contract_address = '')`,
+        ).run(
+          getContract(),
+          id,
+          updated.question,
+          updated.deadline,
+          updated.stake,
+          getContract(),
+        );
+      }
       const tail = updated ? `\n\n${renderBet(updated)}` : "";
-      await ctx.reply(`Resolved. tx: <code>${hash}</code>${tail}`, {
+      await ctx.reply(`Resolved. tx: <code>${shortHash(hash)}</code>${tail}`, {
         parse_mode: "HTML",
       });
     } catch (err) {
@@ -219,5 +369,23 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
       await ctx.reply(`Resolve failed: ${escapeHtml(msg)}`);
     }
   });
-}
 
+  bot.command("status", async (ctx) => {
+    const arg = (ctx.match as string | undefined)?.trim();
+    const id = arg ? Number(arg) : NaN;
+    if (!Number.isFinite(id) || id <= 0) {
+      await ctx.reply("Usage: /status <bet_id>");
+      return;
+    }
+    try {
+      await ctx.reply(await renderStatusReport(getContract(), id), {
+        parse_mode: "HTML",
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`Status check failed: ${escapeHtml(msg)}`, {
+        parse_mode: "HTML",
+      });
+    }
+  });
+}
