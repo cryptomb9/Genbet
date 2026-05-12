@@ -161,7 +161,7 @@ export interface OnchainBet {
   stake: string; // wei as decimal string
   deadline: number;
   status: "open" | "active" | "resolved" | "cancelled" | string;
-  outcome: "" | "YES" | "NO" | "UNCLEAR" | string;
+  outcome: "" | "YES" | "NO" | "PENDING" | "UNCLEAR" | string;
   winner: string;
   created_at: number;
   chat_id: string;

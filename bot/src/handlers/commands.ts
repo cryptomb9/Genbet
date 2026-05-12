@@ -539,7 +539,13 @@ export function registerCommands(bot: Bot, getContract: () => `0x${string}`) {
         );
       }
       const tail = updated ? `\n\n${renderBet(updated)}` : "";
-      await ctx.reply(`Resolved. tx: <code>${shortHash(hash)}</code>${tail}`, {
+      const headline =
+        updated?.status === "active" && updated.outcome === "PENDING"
+          ? "Result is not final yet. Stakes remain locked; retry /resolve later."
+          : updated?.status === "resolved"
+            ? "Resolved. Payout/refund is queued until finality."
+            : "Resolve transaction accepted.";
+      await ctx.reply(`${headline} tx: <code>${shortHash(hash)}</code>${tail}`, {
         parse_mode: "HTML",
       });
     } catch (err) {

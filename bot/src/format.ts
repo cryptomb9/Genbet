@@ -78,7 +78,10 @@ export function renderBet(b: OnchainBet): string {
   ) {
     lines.push(`Refund requested by <code>${shortAddr(b.cancel_requested_by)}</code>`);
   }
-  if (b.status === "cancelled") {
+  if (b.status === "active" && b.outcome === "PENDING") {
+    lines.push("Status: <b>pending final result</b> - retry /resolve later");
+    if (b.reasoning) lines.push(`<i>${escapeHtml(b.reasoning)}</i>`);
+  } else if (b.status === "cancelled") {
     lines.push("Status: <b>cancelled</b> - refund settles after finality");
     if (b.reasoning) lines.push(`<i>${escapeHtml(b.reasoning)}</i>`);
   } else if (b.status === "resolved") {

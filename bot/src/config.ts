@@ -17,7 +17,7 @@ const NETWORK = (process.env.GENLAYER_NETWORK || "testnet-bradbury") as
   | "localnet";
 
 const DEFAULT_BRADBURY_BET_MARKET =
-  "0xDDccAf4747c6aE5ef89A154Ab9E5013952116861" as const;
+  "0xD1cE92a23F0F6114a39B13E01808967025CA1afE" as const;
 
 export const config = {
   telegramToken: required("TELEGRAM_BOT_TOKEN"),

@@ -10,6 +10,7 @@ Genbet lets Telegram groups create peer-to-peer YES/NO bets that escrow and sett
 - Lets another user match the stake with `accept_bet`.
 - Resolves the bet after the deadline with `resolve`.
 - Supports typed crypto price bets through Coinbase candle data.
+- Supports structured sports and public-news/political bets with category-specific settlement rules.
 - Pays the winner, or refunds both sides when the result is unclear or both active bettors agree to cancel.
 
 ## How Settlement Works
@@ -20,11 +21,14 @@ Genbet lets Telegram groups create peer-to-peer YES/NO bets that escrow and sett
 4. Another user accepts and `accept_bet` locks the matching stake.
 5. After the deadline, `/resolve <id>` asks the contract to settle the claim.
 6. Crypto price bets use Coinbase 1-minute candles when the claim has a clear trigger such as `BTC touches 80500`.
-7. Other supported public-fact bets fetch evidence from the creator's source URL when provided, otherwise they search the web.
-8. A GenLayer resolver returns `YES`, `NO`, or `UNCLEAR`, and validators compare the verdict through GenLayer consensus.
-9. `YES` or `NO` pays the winning side 90 percent of the pot and sends 10 percent to the house wallet.
-10. `UNCLEAR` refunds both bettors with no house fee.
-11. Payout/refund messages are queued by the contract at resolution/cancellation time, then the GEN transfer lands after the GenLayer transaction successfully finalizes on Bradbury.
+7. Sports bets encode the event, picked side, and settlement rule. If the match is still live, delayed, in extra time/penalties, or not officially final, the contract returns `PENDING` and keeps the bet active.
+8. Public-news/political bets encode a concrete claim, deadline, and settlement rule. The contract uses a short post-deadline source-update buffer before trying to settle.
+9. Other supported public-fact bets fetch evidence from the creator's source URL when provided, otherwise they search the web.
+10. A GenLayer resolver returns `YES`, `NO`, `PENDING`, or `UNCLEAR`, and validators compare the verdict through GenLayer consensus.
+11. `YES` or `NO` pays the winning side 90 percent of the pot and sends 10 percent to the house wallet.
+12. `PENDING` does not pay or refund; anyone can retry `/resolve <id>` later.
+13. `UNCLEAR` refunds both bettors with no house fee.
+14. Payout/refund messages are queued by the contract at resolution/cancellation time, then the GEN transfer lands after the GenLayer transaction successfully finalizes on Bradbury.
 
 ## Refunds And Cancellations
 
@@ -46,17 +50,12 @@ The default network is Bradbury:
 
 ```env
 GENLAYER_NETWORK=testnet-bradbury
-BET_MARKET_ADDRESS=0xDDccAf4747c6aE5ef89A154Ab9E5013952116861
+BET_MARKET_ADDRESS=0xD1cE92a23F0F6114a39B13E01808967025CA1afE
 ```
 
-The submission contract is pinned to `0xDDccAf4747c6aE5ef89A154Ab9E5013952116861` on Bradbury. Keep `BET_MARKET_ADDRESS` set when deploying so the hosted bot uses the known working contract instead of deploying a new one.
+The submission contract is pinned to `0xD1cE92a23F0F6114a39B13E01808967025CA1afE` on Bradbury. Keep `BET_MARKET_ADDRESS` set when deploying so the hosted bot uses the known working contract instead of deploying a new one.
 
-The bot also caches the deployed contract address in SQLite under `settings.contract_address` and may use `data/.contract_address` for older runs. If you intentionally want a new contract, clear the cache before restarting:
-
-```bash
-pnpm --filter @workspace/bot run clear-contract-cache
-pnpm --filter @workspace/bot run start
-```
+The bot also caches the deployed contract address in SQLite under `settings.contract_address` and may use `data/.contract_address` for older runs.
 
 Do not clear the cache or remove `BET_MARKET_ADDRESS` while users still care about active bets on the current contract. A redeploy starts a new contract with its own bet IDs.
 

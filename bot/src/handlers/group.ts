@@ -113,11 +113,7 @@ export function registerGroupHandler(
     );
     const deadlineUnix = Math.max(parsedDeadlineUnix, minDeadlineUnix);
     const createdAtUnix = Math.floor(Date.now() / 1000);
-    const plannedResolution = planResolution(
-      parsed.question!,
-      createdAtUnix,
-      deadlineUnix,
-    );
+    const plannedResolution = planResolution(parsed, createdAtUnix, deadlineUnix);
     if (plannedResolution && "error" in plannedResolution) {
       await ctx.api.editMessageText(
         ctx.chat.id,
@@ -161,6 +157,9 @@ export function registerGroupHandler(
         ? `🎯 Challenging: <b>@${escapeHtml(parsed.opponent_handle)}</b> (or anyone) — must match on <b>${noSide}</b>`
         : `Open to anyone willing to take <b>${noSide}</b>`,
       `⏰ Deadline: ${deadlineHuman(deadlineUnix)}`,
+      parsed.settlement_rule
+        ? `Rule: ${escapeHtml(parsed.settlement_rule)}`
+        : "",
       resolutionUrl
         ? `🔗 Source: ${escapeHtml(resolutionLabel(resolutionUrl))}`
         : "",

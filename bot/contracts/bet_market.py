@@ -1,4 +1,4 @@
-# v0.1.0
+# v0.2.0
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 #
@@ -6,12 +6,12 @@
 # - Anyone can create_bet by staking GEN with a YES/NO claim and a deadline.
 # - Anyone else can accept_bet by matching the stake (taking the opposite side).
 # - After the deadline, anyone can resolve(). The contract fetches web evidence
-#   and asks a single on-chain LLM call to decide YES / NO / UNCLEAR.
+#   and asks a single on-chain LLM call to decide YES / NO / PENDING / UNCLEAR.
 # - Winner gets pot - fee. House gets fee. UNCLEAR refunds both sides.
 from genlayer import *
 from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 import json
 
 
@@ -39,7 +39,7 @@ class Bet:
     stake: u256                       # amount each side staked, in wei
     deadline: u256                    # unix timestamp; resolve() callable after this
     status: str                       # "open" | "active" | "resolved" | "cancelled"
-    outcome: str                      # "" | "YES" | "NO" | "UNCLEAR"
+    outcome: str                      # "" | "YES" | "NO" | "PENDING" | "UNCLEAR"
     winner: Address                   # zero addr if UNCLEAR / unresolved
     created_at: u256
     chat_id: str                      # telegram chat the bet was placed in (display only)
@@ -180,12 +180,19 @@ class BetMarket(gl.Contract):
         question = bet.question
         url = bet.resolution_url
 
-        result = self._resolve_claim(question, url)
+        result = self._resolve_claim(question, url, int(bet.deadline))
         outcome = result["verdict"]
         reasoning = result["reasoning"]
 
         bet.outcome = outcome
         bet.reasoning = reasoning
+
+        if outcome == "PENDING":
+            # Evidence says the event is not final yet. Keep both stakes locked
+            # and let anyone call resolve() again later.
+            bet.status = "active"
+            self.bets[bid] = bet
+            return
 
         if outcome == "UNCLEAR":
             # Refund both sides; no fee, no winner.
@@ -329,9 +336,13 @@ class BetMarket(gl.Contract):
             "cancel_requested_by": str(self.cancel_requests.get(b.bet_id, ZERO_ADDR)),
         }
 
-    def _resolve_claim(self, question: str, url: str) -> dict:
+    def _resolve_claim(self, question: str, url: str, deadline: int) -> dict:
         if url.startswith("crypto:"):
             return self._resolve_crypto_price(url)
+        if url.startswith("sports:"):
+            return self._resolve_sports_event(url)
+        if url.startswith("news:"):
+            return self._resolve_news_claim(question, url, deadline)
 
         # Keep validator agreement focused on the verdict only. Free-form
         # reasoning differs too often across validators and causes false
@@ -496,6 +507,236 @@ class BetMarket(gl.Contract):
             reason = f"Could not verify {product} price data from Coinbase for the bet window."
         else:
             reason = f"Coinbase candles show {product} was {direction} {target_text}: {outcome}."
+
+        return {"verdict": outcome, "reasoning": reason}
+
+    def _decode_part(self, value: str) -> str:
+        try:
+            return unquote(value)
+        except Exception:
+            return value
+
+    def _fetch_web_evidence(self, query: str, source_hint: str) -> str:
+        evidence = ""
+        if len(source_hint) > 0 and source_hint.startswith("http"):
+            try:
+                evidence = gl.nondet.web.render(source_hint, mode="text")[:5000]
+            except Exception:
+                evidence = ""
+
+        try:
+            search = "https://duckduckgo.com/html/?q=" + quote(query)
+            search_text = gl.nondet.web.render(search, mode="text")[:5000]
+            if len(evidence) > 0:
+                evidence = evidence + "\n\nSEARCH RESULTS:\n" + search_text
+            else:
+                evidence = search_text
+        except Exception:
+            pass
+
+        return evidence[:9000]
+
+    def _resolve_sports_event(self, spec: str) -> dict:
+        parts = spec.split(":")
+        if len(parts) < 9 or parts[1] != "web" or parts[2] != "v1":
+            return {
+                "verdict": "UNCLEAR",
+                "reasoning": "Sports resolver was not configured correctly.",
+            }
+
+        market = self._decode_part(parts[4])
+        selection = self._decode_part(parts[5])
+        event_name = self._decode_part(parts[6])
+        rule = self._decode_part(parts[7])
+        source_hint = self._decode_part(parts[8])
+
+        def nondet_sports_verdict() -> str:
+            evidence = self._fetch_web_evidence(
+                event_name + " final score result " + selection,
+                source_hint,
+            )
+            if len(evidence) == 0:
+                return "PENDING"
+
+            prompt = (
+                "You are resolving a GenLayer YES/NO sports bet.\n"
+                "Resolve only from reliable event/result evidence.\n"
+                "Return PENDING if the event is not started, live, in extra time, in penalties, delayed, postponed, abandoned without a final official result, or the result is not posted yet.\n"
+                "Return YES only if the final result satisfies the selected YES side.\n"
+                "Return NO only if the final result is available and does not satisfy the selected YES side.\n"
+                "Return UNCLEAR if the evidence is contradictory or too weak.\n"
+                "Respond ONLY with JSON in this shape:\n"
+                '{"state":"FINAL|PENDING|UNCLEAR","verdict":"YES|NO|PENDING|UNCLEAR","confidence":0.0,"reasoning":"short reason"}'
+                "\n\nEVENT: " + event_name +
+                "\nMARKET: " + market +
+                "\nYES SELECTION: " + selection +
+                "\nSETTLEMENT RULE: " + rule +
+                "\n\nEVIDENCE:\n" + evidence
+            )
+            try:
+                res = gl.nondet.exec_prompt(prompt, response_format="json")
+            except Exception:
+                try:
+                    res = gl.nondet.exec_prompt(prompt)
+                except Exception:
+                    return "PENDING"
+
+            if isinstance(res, str):
+                try:
+                    data = json.loads(res)
+                except Exception:
+                    return "UNCLEAR"
+            else:
+                data = res
+
+            state = str(data.get("state", "")).strip().upper()
+            verdict = str(data.get("verdict", "UNCLEAR")).strip().upper()
+
+            if state == "PENDING" or verdict == "PENDING":
+                return "PENDING"
+            if state == "UNCLEAR":
+                return "UNCLEAR"
+
+            confidence_raw = data.get("confidence", 0)
+            try:
+                confidence = float(confidence_raw)
+            except Exception:
+                confidence = 0.0
+
+            if verdict in ("YES", "NO") and confidence >= 0.60:
+                return verdict
+            return "UNCLEAR"
+
+        try:
+            verdict = gl.eq_principle.prompt_comparative(
+                nondet_sports_verdict,
+                principle=(
+                    "Both answers must indicate the same sports settlement state. "
+                    "YES/TRUE are equivalent, NO/FALSE are equivalent, "
+                    "PENDING/LIVE/NOT_FINAL/POSTPONED are equivalent, and "
+                    "UNCLEAR/UNKNOWN/INSUFFICIENT_EVIDENCE are equivalent."
+                ),
+            )
+        except Exception:
+            verdict = "UNCLEAR"
+
+        outcome = str(verdict).strip().upper()
+        if outcome not in ("YES", "NO", "PENDING", "UNCLEAR"):
+            outcome = "UNCLEAR"
+
+        if outcome == "PENDING":
+            reason = "Sports result is not final yet. Retry resolve after the official result is posted."
+        elif outcome == "UNCLEAR":
+            reason = "Validators could not verify a reliable final sports result."
+        else:
+            reason = f"Validators resolved the sports result as {outcome} for selection: {selection}."
+
+        return {"verdict": outcome, "reasoning": reason}
+
+    def _resolve_news_claim(self, question: str, spec: str, deadline: int) -> dict:
+        parts = spec.split(":")
+        if len(parts) < 7 or parts[1] != "web" or parts[2] != "v1":
+            return {
+                "verdict": "UNCLEAR",
+                "reasoning": "News resolver was not configured correctly.",
+            }
+
+        try:
+            claim_deadline = int(parts[3])
+        except Exception:
+            claim_deadline = deadline
+
+        claim = self._decode_part(parts[4])
+        rule = self._decode_part(parts[5])
+        source_hint = self._decode_part(parts[6])
+
+        # Give fast-moving news a short publication/indexing buffer so a bet
+        # does not refund or settle from stale search results right at cutoff.
+        now_ts = int(datetime.now().timestamp())
+        if now_ts < claim_deadline + 1800:
+            return {
+                "verdict": "PENDING",
+                "reasoning": "News deadline passed recently. Retry after a short source-update buffer.",
+            }
+
+        def nondet_news_verdict() -> str:
+            evidence = self._fetch_web_evidence(
+                claim + " confirmed before " + datetime.utcfromtimestamp(claim_deadline).isoformat() + "Z",
+                source_hint,
+            )
+            if len(evidence) == 0:
+                return "UNCLEAR"
+
+            prompt = (
+                "You are resolving a GenLayer YES/NO public-fact bet from news or official evidence.\n"
+                "Return YES only if reliable sources confirm the claim happened by the deadline.\n"
+                "Return NO only if the deadline passed and reliable evidence shows the claim did not happen by then.\n"
+                "Return PENDING only if official resolution is still not available or the situation is explicitly still developing.\n"
+                "Return UNCLEAR if evidence is contradictory, weak, or not enough to settle fairly.\n"
+                "Respond ONLY with JSON in this shape:\n"
+                '{"state":"FINAL|PENDING|UNCLEAR","verdict":"YES|NO|PENDING|UNCLEAR","confidence":0.0,"reasoning":"short reason"}'
+                "\n\nCLAIM: " + claim +
+                "\nDEADLINE UTC: " + datetime.utcfromtimestamp(claim_deadline).isoformat() + "Z" +
+                "\nSETTLEMENT RULE: " + rule +
+                "\n\nEVIDENCE:\n" + evidence
+            )
+            try:
+                res = gl.nondet.exec_prompt(prompt, response_format="json")
+            except Exception:
+                try:
+                    res = gl.nondet.exec_prompt(prompt)
+                except Exception:
+                    return "UNCLEAR"
+
+            if isinstance(res, str):
+                try:
+                    data = json.loads(res)
+                except Exception:
+                    return "UNCLEAR"
+            else:
+                data = res
+
+            state = str(data.get("state", "")).strip().upper()
+            verdict = str(data.get("verdict", "UNCLEAR")).strip().upper()
+
+            if state == "PENDING" or verdict == "PENDING":
+                return "PENDING"
+            if state == "UNCLEAR":
+                return "UNCLEAR"
+
+            confidence_raw = data.get("confidence", 0)
+            try:
+                confidence = float(confidence_raw)
+            except Exception:
+                confidence = 0.0
+
+            if verdict in ("YES", "NO") and confidence >= 0.60:
+                return verdict
+            return "UNCLEAR"
+
+        try:
+            verdict = gl.eq_principle.prompt_comparative(
+                nondet_news_verdict,
+                principle=(
+                    "Both answers must indicate the same public-fact settlement state. "
+                    "YES/TRUE are equivalent, NO/FALSE are equivalent, "
+                    "PENDING/NOT_READY/STILL_DEVELOPING are equivalent, and "
+                    "UNCLEAR/UNKNOWN/INSUFFICIENT_EVIDENCE are equivalent."
+                ),
+            )
+        except Exception:
+            verdict = "UNCLEAR"
+
+        outcome = str(verdict).strip().upper()
+        if outcome not in ("YES", "NO", "PENDING", "UNCLEAR"):
+            outcome = "UNCLEAR"
+
+        if outcome == "PENDING":
+            reason = "Reliable news resolution is not ready yet. Retry resolve later."
+        elif outcome == "UNCLEAR":
+            reason = "Validators could not reach a reliable news verdict."
+        else:
+            reason = f"Validators resolved the public-fact claim as {outcome}."
 
         return {"verdict": outcome, "reasoning": reason}
 
