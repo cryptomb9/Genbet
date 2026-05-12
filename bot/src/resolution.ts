@@ -100,6 +100,18 @@ function fixedFootballSource(parsed: ParsedBet, deadlineUnix: number): string {
   return `https://www.bbc.com/sport/football/scores-fixtures/${eventDate}`;
 }
 
+function fixedNewsSource(question: string, deadlineUnix: number): string {
+  const deadlineDate = new Date(deadlineUnix * 1000).toISOString().slice(0, 10);
+  const compactQuestion = question.replace(/\s+/g, " ").slice(0, 220);
+  const query = [
+    compactQuestion,
+    "before",
+    deadlineDate,
+    "(site:reuters.com OR site:apnews.com OR site:bbc.com/news OR site:aljazeera.com)",
+  ].join(" ");
+  return `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+}
+
 function planCryptoResolution(
   question: string,
   startUnix: number,
@@ -211,7 +223,10 @@ function planNewsResolution(
   const rule =
     clean(parsed.settlement_rule) ||
     "Resolve from reputable news or official sources after the claim deadline. If reliable sources contradict each other, return UNCLEAR.";
-  const sourceHint = clean(parsed.source_hint) || clean(parsed.resolution_url);
+  const sourceHint =
+    clean(parsed.source_hint) ||
+    clean(parsed.resolution_url) ||
+    fixedNewsSource(question, deadlineUnix);
   return {
     resolutionUrl: [
       "news",

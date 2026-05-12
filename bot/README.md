@@ -22,7 +22,7 @@ Genbet lets Telegram groups create peer-to-peer YES/NO bets that escrow and sett
 5. After the deadline, `/resolve <id>` asks the contract to settle the claim.
 6. Crypto price bets use Coinbase 1-minute candles when the claim has a clear trigger such as `BTC touches 80500`.
 7. Sports bets encode the event, picked side, and settlement rule. Football/soccer bets automatically use the BBC Sport scores/fixtures page for the event date as the first source, matching the GenLayer prediction-market example pattern. If the match is still live, delayed, in extra time/penalties, or not officially final, the contract returns `PENDING` and keeps the bet active.
-8. Public-news/political bets encode a concrete claim, deadline, and settlement rule. The contract uses a short post-deadline source-update buffer before trying to settle.
+8. Public-news/political bets encode a concrete claim, deadline, and settlement rule. If the user does not paste a source link, the bot defaults to a trusted-source search across Reuters, AP, BBC News, and Al Jazeera. The contract uses a short post-deadline source-update buffer before trying to settle.
 9. Other supported public-fact bets fetch evidence from the creator's source URL when provided, otherwise they search the web.
 10. A GenLayer resolver returns `YES`, `NO`, `PENDING`, or `UNCLEAR`, and validators compare the verdict through GenLayer consensus.
 11. `YES` or `NO` pays the winning side 90 percent of the pot and sends 10 percent to the house wallet.
