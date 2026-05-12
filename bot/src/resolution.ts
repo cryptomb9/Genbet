@@ -33,6 +33,16 @@ export interface ResolutionPlan {
   label: string;
 }
 
+function dateOnlyFromUnix(unix: number): string {
+  return new Date(unix * 1000).toISOString().slice(0, 10);
+}
+
+function dateOnlyFromIso(value: string): string {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return "";
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
 function enc(value: string): string {
   return encodeURIComponent(value.trim());
 }
@@ -67,6 +77,27 @@ function inferSportsSelection(question: string): string {
     }
   }
   return "";
+}
+
+function fixedFootballSource(parsed: ParsedBet, deadlineUnix: number): string {
+  const sport = clean(parsed.sport).toLowerCase();
+  const league = clean(parsed.league).toLowerCase();
+  const eventName = clean(parsed.event_name).toLowerCase();
+  const question = clean(parsed.question).toLowerCase();
+  const looksFootball =
+    sport.includes("football") ||
+    sport.includes("soccer") ||
+    league.includes("premier league") ||
+    league.includes("champions league") ||
+    league.includes("epl") ||
+    /\b(football|soccer|premier league|champions league|fa cup|laliga|la liga|serie a|bundesliga|ligue 1)\b/.test(
+      `${eventName} ${question}`,
+    );
+
+  if (!looksFootball) return "";
+
+  const eventDate = dateOnlyFromIso(clean(parsed.event_time_iso)) || dateOnlyFromUnix(deadlineUnix);
+  return `https://www.bbc.com/sport/football/scores-fixtures/${eventDate}`;
 }
 
 function planCryptoResolution(
@@ -137,7 +168,10 @@ function planSportsResolution(
   const rule =
     clean(parsed.settlement_rule) ||
     "Resolve only when the event source says the match is final. Draw counts as NO unless the selected outcome is draw.";
-  const sourceHint = clean(parsed.source_hint) || clean(parsed.resolution_url);
+  const sourceHint =
+    clean(parsed.source_hint) ||
+    clean(parsed.resolution_url) ||
+    fixedFootballSource(parsed, deadlineUnix);
 
   if (!selection) {
     return {
