@@ -390,8 +390,13 @@ async function recoverCreateBetId(
     resolutionUrl: string;
     stakeWei: bigint;
   },
+  options: { previousTotalBets?: number } = {},
 ): Promise<number> {
-  for (let attempt = 0; attempt < 8; attempt++) {
+  const previousTotalBets = Number.isInteger(options.previousTotalBets)
+    ? Number(options.previousTotalBets)
+    : 0;
+
+  for (let attempt = 0; attempt < 36; attempt++) {
     try {
       const mine = await bm.myBets(contract, creatorAddress, 30);
       const match = mine.find((b) => isExpectedCreatedBet(b, creatorAddress, payload));
@@ -404,17 +409,21 @@ async function recoverCreateBetId(
 
     try {
       const stats = await bm.stats(contract);
-      if (stats.total_bets > 0) {
-        const tail = await bm.getBet(contract, stats.total_bets);
-        if (isExpectedCreatedBet(tail, creatorAddress, payload)) {
-          return stats.total_bets;
+      const totalBets = Number(stats.total_bets);
+      if (totalBets > 0) {
+        const firstCandidate = Math.max(1, previousTotalBets + 1);
+        for (let id = totalBets; id >= firstCandidate; id--) {
+          const bet = await bm.getBet(contract, id);
+          if (isExpectedCreatedBet(bet, creatorAddress, payload)) {
+            return id;
+          }
         }
       }
     } catch {
       // ignore transient read failures
     }
 
-    await sleep(2500 + attempt * 1000);
+    await sleep(5000);
   }
   return 0;
 }
@@ -434,6 +443,10 @@ export async function createBetOnchain(
 ): Promise<{ hash: `0x${string}`; betId: number }> {
   const client = newClient(signerPk);
   const creatorAddress = createAccount(signerPk).address as `0x${string}`;
+  const previousTotalBets = await bm
+    .stats(contract)
+    .then((stats) => Number(stats.total_bets))
+    .catch(() => 0);
   const { hash, receipt } = await writeAndWait(client, {
     address: contract,
     functionName: "create_bet",
@@ -456,7 +469,9 @@ export async function createBetOnchain(
     }
   }
   if (!betId) {
-    betId = await recoverCreateBetId(contract, creatorAddress, payload);
+    betId = await recoverCreateBetId(contract, creatorAddress, payload, {
+      previousTotalBets,
+    });
   }
   if (!Number.isInteger(betId) || betId <= 0) {
     throw new Error(
