@@ -175,11 +175,14 @@ async function read<T>(
   args: unknown[] = [],
 ): Promise<T> {
   const client = newClient();
-  return (await client.readContract({
+  const params = {
     address: contract as GLAddress,
     functionName,
     args: args as CalldataEncodable[],
-  })) as T;
+    stateStatus: "accepted",
+  } as Parameters<typeof client.readContract>[0] & { stateStatus: "accepted" };
+
+  return (await client.readContract(params)) as T;
 }
 
 export const bm = {
